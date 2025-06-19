@@ -68,19 +68,24 @@ class ImmichImageCleaner:
     def test_connection(self):
         """Test connection to Immich API"""
         try:
-            # Ensure URL has /api if it doesn't already
+            # Use the working search/metadata endpoint for connection test
             if not self.immich_url.endswith('/api'):
-                test_url = f"{self.immich_url}/api/server-info/ping"
+                test_url = f"{self.immich_url}/api/search/metadata"
             else:
-                test_url = f"{self.immich_url}/server-info/ping"
+                test_url = f"{self.immich_url}/search/metadata"
             
-            response = requests.get(test_url, headers=self.headers, timeout=10)
+            # Test with empty POST request
+            response = requests.post(test_url, headers=self.headers, json={}, timeout=10)
             logger.info(f"Testing connection to: {test_url}")
             logger.info(f"Response status: {response.status_code}")
-            logger.info(f"Response text: {response.text}")
             
             if response.status_code == 200:
-                return True, "Connection successful"
+                data = response.json()
+                # Check if we get the expected structure
+                if 'assets' in data:
+                    return True, "Connection successful"
+                else:
+                    return False, f"Unexpected response structure: {response.text[:200]}"
             else:
                 return False, f"HTTP {response.status_code}: {response.text}"
         except requests.exceptions.RequestException as e:
@@ -88,21 +93,28 @@ class ImmichImageCleaner:
             return False, f"Connection failed: {str(e)}"
     
     def get_all_assets(self):
-        """Fetch all assets from Immich"""
+        """Fetch all assets from Immich using search/metadata endpoint"""
         try:
-            # Ensure URL has /api
+            # Use the correct search/metadata endpoint
             if not self.immich_url.endswith('/api'):
-                url = f"{self.immich_url}/api/assets"
+                url = f"{self.immich_url}/api/search/metadata"
             else:
-                url = f"{self.immich_url}/assets"
-                
-            response = requests.get(url, headers=self.headers, timeout=30)
+                url = f"{self.immich_url}/search/metadata"
+            
+            # Use POST with empty body to get all assets
+            response = requests.post(url, headers=self.headers, json={}, timeout=30)
             logger.info(f"Fetching assets from: {url}")
             
             if response.status_code == 200:
-                assets = response.json()
-                logger.info(f"Successfully fetched {len(assets)} assets")
-                return assets
+                data = response.json()
+                # Extract assets from the response structure
+                if 'assets' in data and 'items' in data['assets']:
+                    assets = data['assets']['items']
+                    logger.info(f"Successfully fetched {len(assets)} assets")
+                    return assets
+                else:
+                    logger.error(f"Unexpected response structure: {list(data.keys())}")
+                    return []
             else:
                 logger.error(f"Failed to fetch assets: HTTP {response.status_code}")
                 logger.error(f"Response: {response.text}")

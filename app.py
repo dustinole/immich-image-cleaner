@@ -402,6 +402,11 @@ def start_analysis():
     
     return jsonify({'success': True, 'message': 'Analysis started'})
 
+@app.route('/api/analyze/start', methods=['POST'])
+def start_analysis_alt():
+    """Alternative endpoint for starting analysis (used by web interface)"""
+    return start_analysis()
+
 @app.route('/api/results')
 def get_results():
     """Get analysis results"""

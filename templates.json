@@ -6,8 +6,6 @@
     "repository": "https://github.com/dustinole/immich-image-cleaner",
     "support": "https://github.com/dustinole/immich-image-cleaner/issues",
     "language": "en_US",
-    "icon": "https://raw.githubusercontent.com/dustinole/immich-image-cleaner/main/icon.png",
-    "overview": "Cleans up unused images from Immich via API. Includes clickable container name, editable variables, and fixed endpoints.",
     "template": "https://raw.githubusercontent.com/dustinole/immich-image-cleaner/main/templates/immich-image-cleaner.xml"
   }
 ]

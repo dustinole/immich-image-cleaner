@@ -70,7 +70,7 @@ docker run -d \
   -e TZ="America/New_York" \
   -v /path/to/data:/app/data \
   -v /path/to/logs:/app/logs \
-  ghcr.io/YOUR-USERNAME/immich-image-cleaner:latest
+  ghcr.io/dustinole/immich-image-cleaner:latest
 ```
 
 #### Method 2: Docker Compose
@@ -78,7 +78,7 @@ docker run -d \
 services:
   immich-image-cleaner:
     container_name: immich_image_cleaner
-    image: ghcr.io/YOUR-USERNAME/immich-image-cleaner:latest
+    image: ghcr.io/dustinole/immich-image-cleaner:latest
     ports:
       - "5001:5000"
     environment:
@@ -228,7 +228,7 @@ curl -X POST http://localhost:5001/api/mark_for_deletion \
 
 ### Building from Source
 ```bash
-git clone https://github.com/YOUR-USERNAME/immich-image-cleaner.git
+git clone https://github.com/dustinole/immich-image-cleaner.git
 cd immich-image-cleaner
 
 # Build Docker image
@@ -309,14 +309,14 @@ immich-image-cleaner/
 ### Manual Updates
 ```bash
 # Pull latest version
-docker pull ghcr.io/YOUR-USERNAME/immich-image-cleaner:latest
+docker pull ghcr.io/dustinole/immich-image-cleaner:latest
 
 # Restart container
 docker restart immich-image-cleaner
 ```
 
 ### Version History
-Check the [Releases](https://github.com/YOUR-USERNAME/immich-image-cleaner/releases) page for changelog and version history.
+Check the [Releases](https://github.com/dustinole/immich-image-cleaner/releases) page for changelog and version history.
 
 ## 🤔 FAQ
 
@@ -412,8 +412,8 @@ We welcome contributions! Whether it's:
 - **Community**: Join the Immich Discord/Reddit communities
 
 ### Getting Help
-1. Check the [Wiki](https://github.com/YOUR-USERNAME/immich-image-cleaner/wiki) for detailed guides
-2. Search [existing issues](https://github.com/YOUR-USERNAME/immich-image-cleaner/issues) for similar problems
+1. Check the [Wiki](https://github.com/dustinole/immich-image-cleaner/wiki) for detailed guides
+2. Search [existing issues](https://github.com/dustinole/immich-image-cleaner/issues) for similar problems
 3. Create a new issue with detailed information:
    - Immich version
    - Container logs

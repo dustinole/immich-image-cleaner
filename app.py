@@ -599,7 +599,20 @@ def index():
 @app.route('/health')
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({
+        'status': 'healthy', 
+        'version': '1.0.0',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@app.route('/api/version')
+def version():
+    """Get version information"""
+    return jsonify({
+        'version': '1.0.0',
+        'build_date': '2025-06-19',
+        'status': 'stable'
+    })
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def config():
@@ -714,6 +727,9 @@ def run_batch_analysis():
 def get_results():
     """Get analysis results"""
     try:
+        if not cleaner_engine:
+            return jsonify({'error': 'Not configured'}), 400
+            
         category = request.args.get('category', 'all')
         
         with sqlite3.connect(cleaner_engine.db_path) as conn:
@@ -772,6 +788,9 @@ def get_results():
 def get_statistics():
     """Get analysis statistics"""
     try:
+        if not cleaner_engine:
+            return jsonify({'error': 'Not configured'}), 400
+            
         with sqlite3.connect(cleaner_engine.db_path) as conn:
             # Total analyzed
             total = conn.execute('SELECT COUNT(*) FROM asset_analysis').fetchone()[0]
@@ -806,6 +825,9 @@ def get_statistics():
 def mark_for_deletion():
     """Mark assets for deletion"""
     try:
+        if not cleaner_engine:
+            return jsonify({'error': 'Not configured'}), 400
+            
         data = request.json
         asset_ids = data.get('asset_ids', [])
         

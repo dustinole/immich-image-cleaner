@@ -1,862 +1,524 @@
-#!/usr/bin/env python3
-"""
-Immich Image Cleaner Plugin
-A standalone service for detecting and managing unwanted images in your Immich library
-Focuses on screenshots, web cache, thumbnails, and data recovery artifacts
-"""
-
-import os
-import logging
-import json
-import hashlib
-import mimetypes
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-import threading
-import time
-import sqlite3
-
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 import requests
-import cv2
-import numpy as np
-from PIL import Image, ExifTags
-import magic
-from collections import defaultdict
+import sqlite3
+import os
+import json
+import logging
+from datetime import datetime
+import threading
+import time
+import re
+from PIL import Image
+from PIL.ExifTags import TAGS
+import hashlib
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/app/logs/image_cleaner.log'),
+        logging.FileHandler('/app/logs/cleaner.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'immich-cleaner-secret-2024')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-class ImmichAPIClient:
-    """Client for interacting with Immich API"""
-    
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url.rstrip('/')
+# Global variables
+cleaner_engine = None
+analysis_running = False
+
+class ImmichImageCleaner:
+    def __init__(self, immich_url, api_key):
+        self.immich_url = immich_url.rstrip('/')
         self.api_key = api_key
-        self.session = requests.Session()
-        self.session.headers.update({
-            'X-API-Key': api_key,
-            'Content-Type': 'application/json'
-        })
-    
-    def get_assets(self, page: int = 1, size: int = 1000) -> List[Dict]:
-        """Get assets from Immich"""
-        try:
-            response = self.session.get(
-                f"{self.base_url}/assets",
-                params={'page': page, 'size': size}
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error fetching assets: {e}")
-            return []
-    
-    def get_asset_info(self, asset_id: str) -> Optional[Dict]:
-        """Get detailed asset information"""
-        try:
-            response = self.session.get(f"{self.base_url}/assets/{asset_id}")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error fetching asset {asset_id}: {e}")
-            return None
-    
-    def get_faces_for_asset(self, asset_id: str) -> List[Dict]:
-        """Get faces detected in an asset using Immich's ML"""
-        try:
-            response = self.session.get(f"{self.base_url}/faces", 
-                                      params={'assetId': asset_id})
-            if response.status_code == 200:
-                return response.json()
-            return []
-        except Exception as e:
-            logger.error(f"Error fetching faces for asset {asset_id}: {e}")
-            return []
-    
-    def get_smart_search_data(self, asset_id: str) -> Optional[Dict]:
-        """Get smart search/ML analysis data for an asset"""
-        try:
-            response = self.session.get(f"{self.base_url}/search/metadata/{asset_id}")
-            if response.status_code == 200:
-                return response.json()
-            return None
-        except Exception as e:
-            logger.error(f"Error fetching ML data for asset {asset_id}: {e}")
-            return None
-    
-    def get_asset_statistics(self) -> Optional[Dict]:
-        """Get overall asset statistics from Immich"""
-        try:
-            response = self.session.get(f"{self.base_url}/server-info/statistics")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error fetching statistics: {e}")
-            return None
-    
-    def download_asset(self, asset_id: str, thumbnail: bool = True) -> Optional[bytes]:
-        """Download asset image data (only when needed for custom analysis)"""
-        try:
-            endpoint = f"/assets/{asset_id}/thumbnail" if thumbnail else f"/assets/{asset_id}/original"
-            response = self.session.get(f"{self.base_url}{endpoint}")
-            response.raise_for_status()
-            return response.content
-        except Exception as e:
-            logger.error(f"Error downloading asset {asset_id}: {e}")
-            return None
-    
-    def delete_asset(self, asset_id: str) -> bool:
-        """Delete an asset from Immich"""
-        try:
-            response = self.session.delete(f"{self.base_url}/assets/{asset_id}")
-            response.raise_for_status()
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting asset {asset_id}: {e}")
-            return False
-
-class UnwantedImageDetector:
-    """Comprehensive detector for unwanted images"""
-    
-    def __init__(self):
-        self.screenshot_patterns = [
-            # Common screenshot patterns
-            r'screenshot', r'screen_shot', r'screen shot', r'capture', r'snap',
-            r'img_\d{4}', r'image_\d{4}', r'vlcsnap', r'snapshot',
-            # Mobile patterns
-            r'screenshot_\d{8}', r'screen_\d{8}', r'capture_\d{8}',
-            # Windows patterns
-            r'clipboard', r'prtscr', r'snip',
-            # Web patterns
-            r'webpage', r'browser', r'tab_', r'window_'
-        ]
-        
-        self.web_cache_patterns = [
-            # Browser cache patterns
-            r'cache', r'temp', r'tmp', r'preview', r'thumb',
-            r'avatar', r'profile_pic', r'icon', r'favicon',
-            r'banner', r'header', r'footer', r'widget',
-            # Social media patterns
-            r'fb_', r'twitter_', r'insta_', r'snap_', r'tiktok_',
-            # Web artifacts
-            r'advertisement', r'ads_', r'promo', r'popup'
-        ]
-        
-        self.low_quality_indicators = [
-            # Size indicators (pixels)
-            (100, 100),  # Very small images
-            (150, 150),  # Likely thumbnails
-            (200, 200),  # Small previews
-        ]
-        
-        # Common screen resolutions (suggests screenshots)
-        self.screenshot_resolutions = [
-            (1920, 1080), (1366, 768), (1280, 720), (1024, 768),
-            (1440, 900), (1600, 900), (1680, 1050), (1920, 1200),
-            # Mobile resolutions
-            (414, 896), (375, 667), (360, 640), (320, 568),
-            (411, 731), (393, 851), (428, 926),
-            # Tablet resolutions
-            (768, 1024), (1024, 1366), (820, 1180)
-        ]
-    
-    def analyze_image(self, asset_id: str, asset_info: Dict, immich_client: 'ImmichAPIClient') -> Dict:
-        """Comprehensive analysis using Immich's existing ML data and minimal additional processing"""
-        try:
-            analysis_result = {
-                'asset_id': asset_id,
-                'filename': asset_info.get('originalFileName', ''),
-                'file_path': asset_info.get('originalPath', ''),
-                'file_size': asset_info.get('originalSize', 0),
-                'mime_type': asset_info.get('type', 'unknown'),
-                'is_screenshot': False,
-                'is_web_cache': False,
-                'is_low_quality': False,
-                'is_duplicate': False,
-                'is_corrupt': False,
-                'confidence_score': 0.0,
-                'flags': [],
-                'recommendations': [],
-                'analysis_date': datetime.now().isoformat(),
-                'has_faces': False,
-                'face_count': 0
-            }
-            
-            # Get existing ML analysis from Immich
-            faces_data = immich_client.get_faces_for_asset(asset_id)
-            smart_data = immich_client.get_smart_search_data(asset_id)
-            
-            # Use Immich's existing face detection results
-            if faces_data:
-                analysis_result['has_faces'] = True
-                analysis_result['face_count'] = len(faces_data)
-                analysis_result['flags'].append(f"Immich detected {len(faces_data)} faces")
-            
-            # Analyze different aspects (prioritizing metadata over image processing)
-            self._analyze_filename(analysis_result)
-            self._analyze_file_path(analysis_result)
-            self._analyze_asset_metadata(analysis_result, asset_info)
-            self._analyze_exif_data(analysis_result, asset_info)
-            
-            # Only do heavy image processing if needed for high-confidence cases
-            needs_image_analysis = (
-                analysis_result['is_screenshot'] or 
-                analysis_result['is_web_cache'] or
-                not analysis_result['has_faces']  # No faces detected by Immich
-            )
-            
-            if needs_image_analysis and analysis_result['file_size'] < 10_000_000:  # < 10MB
-                self._analyze_image_content_lightweight(analysis_result, asset_info, immich_client)
-            
-            # Calculate overall confidence
-            self._calculate_confidence(analysis_result)
-            
-            # Generate recommendations
-            self._generate_recommendations(analysis_result)
-            
-            return analysis_result
-            
-        except Exception as e:
-            logger.error(f"Error analyzing image {asset_id}: {e}")
-            return {'error': str(e), 'asset_id': asset_id}
-    
-    def _analyze_filename(self, result: Dict):
-        """Analyze filename for unwanted patterns"""
-        filename = result['filename'].lower()
-        
-        # Screenshot detection
-        for pattern in self.screenshot_patterns:
-            if pattern.replace('\\', '') in filename:
-                result['is_screenshot'] = True
-                result['flags'].append(f"Screenshot pattern: {pattern}")
-                break
-        
-        # Web cache detection
-        for pattern in self.web_cache_patterns:
-            if pattern.replace('\\', '') in filename:
-                result['is_web_cache'] = True
-                result['flags'].append(f"Web cache pattern: {pattern}")
-                break
-        
-        # Generic unwanted patterns
-        unwanted_keywords = [
-            'temp', 'tmp', 'cache', 'backup', 'copy', 'duplicate',
-            'untitled', 'unknown', 'recovered', 'restored'
-        ]
-        
-        for keyword in unwanted_keywords:
-            if keyword in filename:
-                result['flags'].append(f"Unwanted keyword: {keyword}")
-    
-    def _analyze_file_path(self, result: Dict):
-        """Analyze file path for indicators"""
-        file_path = result['file_path'].lower()
-        
-        # Common unwanted directories
-        unwanted_dirs = [
-            'temp', 'tmp', 'cache', 'thumbnails', 'thumbs',
-            'preview', 'downloads', 'screenshots', 'captures',
-            'browser', 'chrome', 'firefox', 'safari', 'edge',
-            'recycle', 'trash', 'deleted'
-        ]
-        
-        for dir_name in unwanted_dirs:
-            if dir_name in file_path:
-                result['flags'].append(f"Unwanted directory: {dir_name}")
-    
-    def _analyze_asset_metadata(self, result: Dict, asset_info: Dict):
-        """Analyze asset metadata from Immich"""
-        # Check dimensions from Immich metadata
-        exif_info = asset_info.get('exifInfo', {})
-        
-        # Get image dimensions from EXIF
-        width = exif_info.get('imageWidth') or exif_info.get('exifImageWidth')
-        height = exif_info.get('imageHeight') or exif_info.get('exifImageHeight')
-        
-        if width and height:
-            result.update({
-                'width': width,
-                'height': height,
-                'aspect_ratio': width / height
-            })
-            
-            # Check for very small images (likely thumbnails)
-            for max_width, max_height in self.low_quality_indicators:
-                if width <= max_width and height <= max_height:
-                    result['is_low_quality'] = True
-                    result['flags'].append(f"Small size: {width}x{height}")
-                    break
-            
-            # Check for exact screenshot resolutions
-            if (width, height) in self.screenshot_resolutions:
-                result['is_screenshot'] = True
-                result['flags'].append(f"Screenshot resolution: {width}x{height}")
-            
-            # Check for unusual aspect ratios (might indicate crops/artifacts)
-            aspect_ratio = width / height
-            if aspect_ratio > 5 or aspect_ratio < 0.2:  # Very wide or very tall
-                result['flags'].append(f"Unusual aspect ratio: {aspect_ratio:.2f}")
-        
-        # Check file size
-        file_size = result['file_size']
-        if file_size < 10000:  # Less than 10KB
-            result['is_low_quality'] = True
-            result['flags'].append("Very small file size")
-        elif file_size > 50000000:  # Greater than 50MB
-            result['flags'].append("Unusually large file")
-    
-    def _analyze_exif_data(self, result: Dict, asset_info: Dict):
-        """Analyze EXIF data for indicators"""
-        exif_info = asset_info.get('exifInfo', {})
-        
-        # No camera information often indicates non-camera source
-        if not exif_info.get('make') and not exif_info.get('model'):
-            result['flags'].append("No camera information")
-        
-        # Check software field for screenshot indicators
-        software = exif_info.get('software', '').lower()
-        screenshot_software = [
-            'android', 'ios', 'windows', 'macos', 'linux',
-            'screenshot', 'snipping', 'capture', 'paint',
-            'photoshop', 'gimp', 'canva', 'figma'
-        ]
-        
-        for soft in screenshot_software:
-            if soft in software:
-                result['is_screenshot'] = True
-                result['flags'].append(f"Screenshot software: {software}")
-                break
-        
-        # Check for missing creation date (common in recovered files)
-        if not asset_info.get('fileCreatedAt') and not exif_info.get('dateTimeOriginal'):
-            result['flags'].append("Missing creation date")
-    
-    def _analyze_image_content_lightweight(self, result: Dict, asset_info: Dict, immich_client: 'ImmichAPIClient'):
-        """Lightweight image content analysis only when needed"""
-        try:
-            # Only download thumbnail for content analysis to save bandwidth
-            image_data = immich_client.download_asset(result['asset_id'], thumbnail=True)
-            if not image_data:
-                result['flags'].append("Could not download for analysis")
-                return
-            
-            # Save temporary file for minimal analysis
-            temp_path = f'/app/temp/{result["asset_id"]}_thumb.tmp'
-            os.makedirs('/app/temp', exist_ok=True)
-            with open(temp_path, 'wb') as f:
-                f.write(image_data)
-            
-            try:
-                # Basic OpenCV analysis on thumbnail
-                img = cv2.imread(temp_path)
-                if img is None:
-                    result['is_corrupt'] = True
-                    result['flags'].append("Cannot read image file")
-                    return
-                
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                
-                # Quick UI element detection (simplified for thumbnail)
-                ui_elements = self._detect_ui_elements_simple(gray)
-                if ui_elements > 10:  # Adjusted threshold for thumbnail
-                    result['is_screenshot'] = True
-                    result['flags'].append(f"UI elements detected in thumbnail: {ui_elements}")
-                
-                # Quick uniformity check
-                if self._is_mostly_uniform(gray):
-                    result['flags'].append("Mostly uniform color (possible generated image)")
-                    
-            finally:
-                # Cleanup
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-                    
-        except Exception as e:
-            logger.warning(f"Error in lightweight content analysis: {e}")
-            result['flags'].append("Content analysis failed")
-    
-    def _detect_ui_elements_simple(self, gray_image: np.ndarray) -> int:
-        """Simplified UI element detection for thumbnails"""
-        try:
-            # Simple edge detection
-            edges = cv2.Canny(gray_image, 50, 150)
-            
-            # Count strong horizontal and vertical lines (typical of UI)
-            horizontal_lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=20, minLineLength=10, maxLineGap=5)
-            vertical_lines = cv2.HoughLinesP(edges, 1, np.pi/2, threshold=20, minLineLength=10, maxLineGap=5)
-            
-            total_lines = 0
-            if horizontal_lines is not None:
-                total_lines += len(horizontal_lines)
-            if vertical_lines is not None:
-                total_lines += len(vertical_lines)
-                
-            return total_lines
-            
-        except Exception as e:
-            logger.warning(f"Error in simple UI detection: {e}")
-            return 0
-    
-    def _is_mostly_uniform(self, gray_image: np.ndarray) -> bool:
-        """Check if image is mostly uniform color"""
-        try:
-            # Calculate histogram
-            hist = cv2.calcHist([gray_image], [0], None, [256], [0, 256])
-            
-            # Find the most common color
-            max_count = np.max(hist)
-            total_pixels = gray_image.shape[0] * gray_image.shape[1]
-            
-            # If more than 80% is the same color
-            return (max_count / total_pixels) > 0.8
-            
-        except Exception as e:
-            logger.warning(f"Error checking uniformity: {e}")
-            return False
-    
-    def _calculate_confidence(self, result: Dict):
-        """Calculate overall confidence that image is unwanted"""
-        confidence = 0.0
-        
-        # Strong indicators
-        if result['is_screenshot']:
-            confidence += 0.4
-        if result['is_web_cache']:
-            confidence += 0.3
-        if result['is_low_quality']:
-            confidence += 0.2
-        if result['is_corrupt']:
-            confidence += 0.5
-        
-        # Flag-based scoring
-        flag_score = min(len(result['flags']) * 0.05, 0.3)
-        confidence += flag_score
-        
-        # File size considerations
-        if result['file_size'] < 10000:  # Less than 10KB
-            confidence += 0.1
-        elif result['file_size'] > 50000000:  # Greater than 50MB (unusually large)
-            confidence += 0.05
-        
-        result['confidence_score'] = min(confidence, 1.0)
-    
-    def _generate_recommendations(self, result: Dict):
-        """Generate recommendations based on analysis"""
-        recommendations = []
-        
-        if result['confidence_score'] > 0.8:
-            recommendations.append("🗑️ Strongly recommend deletion")
-        elif result['confidence_score'] > 0.6:
-            recommendations.append("⚠️ Consider for removal")
-        elif result['confidence_score'] > 0.4:
-            recommendations.append("🤔 Manual review recommended")
-        else:
-            recommendations.append("✅ Likely keep")
-        
-        if result['is_screenshot']:
-            recommendations.append("📱 Move to screenshots album or delete")
-        
-        if result['is_web_cache']:
-            recommendations.append("🌐 Web artifact - safe to delete")
-        
-        if result['is_low_quality']:
-            recommendations.append("🔍 Check if higher quality version exists")
-        
-        if result['is_corrupt']:
-            recommendations.append("💥 Corrupted file - delete")
-        
-        result['recommendations'] = recommendations
-
-class ImageCleanerEngine:
-    """Main engine for image cleaning operations"""
-    
-    def __init__(self, immich_client: ImmichAPIClient):
-        self.immich_client = immich_client
-        self.detector = UnwantedImageDetector()
-        self.db_path = '/app/data/cleaner.db'
+        self.headers = {'X-Api-Key': api_key}
+        self.db_path = '/app/data/cleaner_results.db'
+        self.ensure_data_directory()
         self.init_database()
-    
-    def init_database(self):
-        """Initialize SQLite database for tracking analysis"""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
+    def ensure_data_directory(self):
+        """Ensure data directory exists"""
+        os.makedirs('/app/data', exist_ok=True)
+        os.makedirs('/app/logs', exist_ok=True)
+        
+    def init_database(self):
+        """Initialize SQLite database for storing analysis results"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
-                CREATE TABLE IF NOT EXISTS asset_analysis (
-                    asset_id TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS analysis_results (
+                    id TEXT PRIMARY KEY,
                     filename TEXT,
                     file_path TEXT,
-                    file_size INTEGER,
-                    mime_type TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    is_screenshot BOOLEAN,
-                    is_web_cache BOOLEAN,
-                    is_low_quality BOOLEAN,
-                    is_duplicate BOOLEAN,
-                    is_corrupt BOOLEAN,
-                    has_faces BOOLEAN,
-                    face_count INTEGER,
+                    category TEXT,
                     confidence_score REAL,
-                    flags TEXT,
-                    recommendations TEXT,
-                    analysis_date TEXT,
-                    status TEXT DEFAULT 'analyzed',
-                    marked_for_deletion BOOLEAN DEFAULT 0
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS duplicate_groups (
-                    group_id TEXT,
-                    asset_id TEXT,
-                    file_hash TEXT,
+                    reasons TEXT,
                     file_size INTEGER,
-                    PRIMARY KEY (group_id, asset_id)
+                    created_date TEXT,
+                    marked_for_deletion BOOLEAN DEFAULT 0,
+                    analysis_date TEXT
                 )
             ''')
+            conn.commit()
     
-    def analyze_asset(self, asset_id: str) -> Dict:
-        """Analyze a single asset leveraging Immich's existing ML data"""
+    def test_connection(self):
+        """Test connection to Immich API"""
         try:
-            # Get asset info
-            asset_info = self.immich_client.get_asset_info(asset_id)
-            if not asset_info:
-                return {'error': 'Could not fetch asset info'}
+            # Ensure URL has /api if it doesn't already
+            if not self.immich_url.endswith('/api'):
+                test_url = f"{self.immich_url}/api/server-info/ping"
+            else:
+                test_url = f"{self.immich_url}/server-info/ping"
             
-            # Analyze using Immich's existing data + minimal additional processing
-            result = self.detector.analyze_image(asset_id, asset_info, self.immich_client)
+            response = requests.get(test_url, headers=self.headers, timeout=10)
+            logger.info(f"Testing connection to: {test_url}")
+            logger.info(f"Response status: {response.status_code}")
+            logger.info(f"Response text: {response.text}")
             
-            # Store results
-            if 'error' not in result:
-                self._save_analysis_result(result)
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error analyzing asset {asset_id}: {e}")
-            return {'error': str(e)}
+            if response.status_code == 200:
+                return True, "Connection successful"
+            else:
+                return False, f"HTTP {response.status_code}: {response.text}"
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Connection test failed: {str(e)}")
+            return False, f"Connection failed: {str(e)}"
     
-    def _save_analysis_result(self, result: Dict):
-        """Save analysis result to database"""
+    def get_all_assets(self):
+        """Fetch all assets from Immich"""
         try:
+            # Ensure URL has /api
+            if not self.immich_url.endswith('/api'):
+                url = f"{self.immich_url}/api/assets"
+            else:
+                url = f"{self.immich_url}/assets"
+                
+            response = requests.get(url, headers=self.headers, timeout=30)
+            logger.info(f"Fetching assets from: {url}")
+            
+            if response.status_code == 200:
+                assets = response.json()
+                logger.info(f"Successfully fetched {len(assets)} assets")
+                return assets
+            else:
+                logger.error(f"Failed to fetch assets: HTTP {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching assets: {str(e)}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing JSON response: {str(e)}")
+            logger.error(f"Response content: {response.text[:500]}...")
+            return []
+    
+    def analyze_asset(self, asset):
+        """Analyze a single asset for cleanup candidates"""
+        reasons = []
+        confidence = 0.0
+        category = "unknown"
+        
+        filename = asset.get('originalFileName', '').lower()
+        file_path = asset.get('originalPath', '')
+        
+        # Screenshot detection
+        if self.is_screenshot(asset, filename):
+            category = "screenshot"
+            reasons.append("Screenshot detected")
+            confidence += 0.8
+            
+        # Web cache detection
+        elif self.is_web_cache(asset, filename, file_path):
+            category = "web_cache"
+            reasons.append("Web cache/thumbnail detected")
+            confidence += 0.7
+            
+        # Data recovery artifacts
+        elif self.is_recovery_artifact(asset, filename, file_path):
+            category = "recovery_artifact"
+            reasons.append("Data recovery artifact")
+            confidence += 0.9
+            
+        # Duplicate detection (basic)
+        elif self.is_likely_duplicate(asset, filename):
+            category = "duplicate"
+            reasons.append("Potential duplicate")
+            confidence += 0.6
+            
+        return {
+            'category': category,
+            'confidence': min(confidence, 1.0),
+            'reasons': '; '.join(reasons)
+        }
+    
+    def is_screenshot(self, asset, filename):
+        """Detect screenshots based on various criteria"""
+        screenshot_patterns = [
+            r'screenshot', r'screen_shot', r'screen shot',
+            r'img_\d+', r'image_\d+',
+            r'photo_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}',
+            r'screenshot_\d+', r'capture_\d+'
+        ]
+        
+        for pattern in screenshot_patterns:
+            if re.search(pattern, filename, re.IGNORECASE):
+                return True
+                
+        # Check for common screenshot resolutions
+        if 'exifInfo' in asset:
+            exif = asset['exifInfo']
+            if exif.get('imageWidth') and exif.get('imageHeight'):
+                width, height = exif['imageWidth'], exif['imageHeight']
+                # Common mobile screenshot resolutions
+                screenshot_resolutions = [
+                    (1080, 1920), (1440, 2560), (1125, 2436),
+                    (828, 1792), (750, 1334), (1080, 2340)
+                ]
+                if (width, height) in screenshot_resolutions or (height, width) in screenshot_resolutions:
+                    return True
+        
+        return False
+    
+    def is_web_cache(self, asset, filename, file_path):
+        """Detect web cache and thumbnail files"""
+        cache_indicators = [
+            'cache', 'thumb', 'thumbnail', 'temp', 'tmp',
+            'preview', 'avatar', 'profile', 'social',
+            'facebook', 'instagram', 'twitter', 'whatsapp'
+        ]
+        
+        for indicator in cache_indicators:
+            if indicator in filename or indicator in file_path.lower():
+                return True
+                
+        return False
+    
+    def is_recovery_artifact(self, asset, filename, file_path):
+        """Detect data recovery artifacts"""
+        recovery_patterns = [
+            r'recovered', r'restore', r'backup',
+            r'file_\d+', r'img_\d{4}', r'dsc_\d+',
+            r'copy_of', r'duplicate', r'recovered_file'
+        ]
+        
+        for pattern in recovery_patterns:
+            if re.search(pattern, filename, re.IGNORECASE):
+                return True
+                
+        return False
+    
+    def is_likely_duplicate(self, asset, filename):
+        """Basic duplicate detection"""
+        duplicate_patterns = [
+            r'copy', r'duplicate', r'\(\d+\)',
+            r'_copy', r'_duplicate', r' - copy'
+        ]
+        
+        for pattern in duplicate_patterns:
+            if re.search(pattern, filename, re.IGNORECASE):
+                return True
+                
+        return False
+    
+    def run_analysis(self, socketio_instance):
+        """Run the full analysis process"""
+        global analysis_running
+        analysis_running = True
+        
+        try:
+            # Clear previous results
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute('''
-                    INSERT OR REPLACE INTO asset_analysis 
-                    (asset_id, filename, file_path, file_size, mime_type, width, height,
-                     is_screenshot, is_web_cache, is_low_quality, is_duplicate, is_corrupt,
-                     has_faces, face_count, confidence_score, flags, recommendations, analysis_date, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    result['asset_id'],
-                    result['filename'],
-                    result['file_path'],
-                    result['file_size'],
-                    result['mime_type'],
-                    result.get('width'),
-                    result.get('height'),
-                    result['is_screenshot'],
-                    result['is_web_cache'],
-                    result['is_low_quality'],
-                    result['is_duplicate'],
-                    result['is_corrupt'],
-                    result['has_faces'],
-                    result['face_count'],
-                    result['confidence_score'],
-                    json.dumps(result['flags']),
-                    json.dumps(result['recommendations']),
-                    result['analysis_date'],
-                    'analyzed'
-                ))
+                conn.execute('DELETE FROM analysis_results')
+                conn.commit()
+            
+            # Fetch all assets
+            socketio_instance.emit('analysis_update', {'status': 'Fetching assets from Immich...'})
+            assets = self.get_all_assets()
+            
+            if not assets:
+                socketio_instance.emit('analysis_complete', {'error': 'No assets found or connection failed'})
+                return
+            
+            total_assets = len(assets)
+            processed = 0
+            candidates_found = 0
+            
+            socketio_instance.emit('analysis_update', {
+                'status': f'Analyzing {total_assets} assets...',
+                'progress': 0,
+                'total': total_assets
+            })
+            
+            # Process assets in batches
+            batch_size = 100
+            for i in range(0, total_assets, batch_size):
+                batch = assets[i:i + batch_size]
+                
+                with sqlite3.connect(self.db_path) as conn:
+                    for asset in batch:
+                        analysis_result = self.analyze_asset(asset)
+                        
+                        if analysis_result['confidence'] > 0.5:  # Only store candidates
+                            conn.execute('''
+                                INSERT INTO analysis_results 
+                                (id, filename, file_path, category, confidence_score, reasons, 
+                                 file_size, created_date, analysis_date)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                asset.get('id', ''),
+                                asset.get('originalFileName', ''),
+                                asset.get('originalPath', ''),
+                                analysis_result['category'],
+                                analysis_result['confidence'],
+                                analysis_result['reasons'],
+                                asset.get('exifInfo', {}).get('fileSizeInByte', 0),
+                                asset.get('fileCreatedAt', ''),
+                                datetime.now().isoformat()
+                            ))
+                            candidates_found += 1
+                        
+                        processed += 1
+                        
+                        # Update progress
+                        if processed % 50 == 0:
+                            progress = (processed / total_assets) * 100
+                            socketio_instance.emit('analysis_update', {
+                                'status': f'Processed {processed}/{total_assets} assets...',
+                                'progress': progress,
+                                'candidates_found': candidates_found
+                            })
+                    
+                    conn.commit()
+            
+            logger.info(f"Batch analysis completed. Processed {processed} assets")
+            socketio_instance.emit('analysis_complete', {
+                'total_processed': processed,
+                'candidates_found': candidates_found
+            })
+            
         except Exception as e:
-            logger.error(f"Error saving analysis result: {e}")
+            logger.error(f"Analysis error: {str(e)}")
+            socketio_instance.emit('analysis_complete', {'error': str(e)})
+        finally:
+            analysis_running = False
 
-# Global variables
-immich_client = None
-cleaner_engine = None
-
+# Routes
 @app.route('/')
 def index():
-    """Main dashboard"""
     return render_template('cleaner.html')
 
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy', 
-        'version': '1.0.0',
-        'timestamp': datetime.now().isoformat()
-    })
-
 @app.route('/api/version')
-def version():
-    """Get version information"""
-    return jsonify({
-        'version': '1.0.0',
-        'build_date': '2025-06-19',
-        'status': 'stable'
-    })
+def get_version():
+    """Get application version"""
+    try:
+        with open('/app/VERSION', 'r') as f:
+            version = f.read().strip()
+        return jsonify({'version': version})
+    except:
+        return jsonify({'version': 'unknown'})
 
-@app.route('/api/config', methods=['GET', 'POST'])
-def config():
-    """Configure Immich connection"""
-    global immich_client, cleaner_engine
+@app.route('/api/config', methods=['POST'])
+def save_config():
+    """Save configuration and test connection"""
+    global cleaner_engine
     
-    if request.method == 'POST':
-        data = request.json
-        immich_url = data.get('immich_url')
-        api_key = data.get('api_key')
+    try:
+        data = request.get_json()
+        immich_url = data.get('immich_url', '').strip()
+        api_key = data.get('api_key', '').strip()
         
-        try:
-            # Test connection
-            test_client = ImmichAPIClient(immich_url, api_key)
-            assets = test_client.get_assets(page=1, size=1)
-            
-            # Save config
-            os.makedirs('/app/data', exist_ok=True)
+        if not immich_url or not api_key:
+            return jsonify({'success': False, 'message': 'URL and API key are required'}), 400
+        
+        # Create cleaner engine
+        cleaner_engine = ImmichImageCleaner(immich_url, api_key)
+        
+        # Test connection
+        success, message = cleaner_engine.test_connection()
+        
+        if success:
+            # Save config to file
+            config = {'immich_url': immich_url, 'api_key': api_key}
             with open('/app/data/config.json', 'w') as f:
-                json.dump({'immich_url': immich_url, 'api_key': api_key}, f)
+                json.dump(config, f)
             
-            # Initialize global clients
-            immich_client = test_client
-            cleaner_engine = ImageCleanerEngine(immich_client)
+            return jsonify({
+                'success': True, 
+                'message': 'Configuration saved and connection tested successfully!'
+            })
+        else:
+            cleaner_engine = None
+            return jsonify({'success': False, 'message': message}), 400
             
-            return jsonify({'success': True, 'message': 'Configuration saved and tested successfully'})
-            
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 400
-    
-    else:
-        # Load existing config
-        try:
-            with open('/app/data/config.json', 'r') as f:
-                config = json.load(f)
-                return jsonify(config)
-        except:
-            return jsonify({'immich_url': '', 'api_key': ''})
+    except Exception as e:
+        logger.error(f"Configuration error: {str(e)}")
+        cleaner_engine = None
+        return jsonify({'success': False, 'message': str(e)}), 500
 
-@app.route('/api/analyze/start', methods=['POST'])
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """Get current configuration"""
+    try:
+        with open('/app/data/config.json', 'r') as f:
+            config = json.load(f)
+        # Don't return the API key for security
+        return jsonify({
+            'immich_url': config.get('immich_url', ''),
+            'has_api_key': bool(config.get('api_key'))
+        })
+    except:
+        return jsonify({'immich_url': '', 'has_api_key': False})
+
+@app.route('/api/start_analysis', methods=['POST'])
 def start_analysis():
-    """Start batch analysis of assets"""
-    if not cleaner_engine:
-        return jsonify({'error': 'Not configured'}), 400
+    """Start the analysis process"""
+    global analysis_running
     
-    # Start analysis in background
-    threading.Thread(target=run_batch_analysis, daemon=True).start()
+    if not cleaner_engine:
+        return jsonify({'success': False, 'message': 'Not configured. Please save configuration first.'}), 400
+    
+    if analysis_running:
+        return jsonify({'success': False, 'message': 'Analysis already running'}), 400
+    
+    # Start analysis in background thread
+    thread = threading.Thread(target=cleaner_engine.run_analysis, args=(socketio,))
+    thread.daemon = True
+    thread.start()
     
     return jsonify({'success': True, 'message': 'Analysis started'})
-
-def run_batch_analysis():
-    """Run batch analysis of all assets"""
-    try:
-        logger.info("Starting batch analysis")
-        socketio.emit('analysis_status', {'status': 'starting'})
-        
-        # Get all assets
-        page = 1
-        total_processed = 0
-        
-        while True:
-            assets = immich_client.get_assets(page=page, size=50)  # Smaller batches for responsiveness
-            if not assets:
-                break
-            
-            for asset in assets:
-                try:
-                    asset_id = asset.get('id')
-                    if not asset_id:
-                        continue
-                    
-                    # Skip if already analyzed
-                    with sqlite3.connect(cleaner_engine.db_path) as conn:
-                        cursor = conn.execute(
-                            'SELECT status FROM asset_analysis WHERE asset_id = ?', 
-                            (asset_id,)
-                        )
-                        existing = cursor.fetchone()
-                        if existing and existing[0] == 'analyzed':
-                            continue
-                    
-                    # Analyze asset
-                    result = cleaner_engine.analyze_asset(asset_id)
-                    total_processed += 1
-                    
-                    # Emit progress
-                    socketio.emit('analysis_progress', {
-                        'processed': total_processed,
-                        'current_asset': asset_id,
-                        'result': result
-                    })
-                    
-                    # Small delay to prevent overwhelming
-                    time.sleep(0.1)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing asset: {e}")
-            
-            page += 1
-        
-        socketio.emit('analysis_status', {
-            'status': 'completed', 
-            'total_processed': total_processed
-        })
-        logger.info(f"Batch analysis completed. Processed {total_processed} assets")
-        
-    except Exception as e:
-        logger.error(f"Error in batch analysis: {e}")
-        socketio.emit('analysis_status', {'status': 'error', 'error': str(e)})
 
 @app.route('/api/results')
 def get_results():
     """Get analysis results"""
+    if not cleaner_engine:
+        return jsonify({'error': 'Not configured'}), 400
+        
     try:
-        if not cleaner_engine:
-            return jsonify({'error': 'Not configured'}), 400
-            
         category = request.args.get('category', 'all')
         
         with sqlite3.connect(cleaner_engine.db_path) as conn:
-            if category == 'screenshots':
+            if category == 'all':
                 cursor = conn.execute('''
-                    SELECT * FROM asset_analysis 
-                    WHERE is_screenshot = 1 
-                    ORDER BY confidence_score DESC 
-                    LIMIT 1000
+                    SELECT * FROM analysis_results 
+                    ORDER BY confidence_score DESC, category
                 ''')
-            elif category == 'web_cache':
+            else:
                 cursor = conn.execute('''
-                    SELECT * FROM asset_analysis 
-                    WHERE is_web_cache = 1 
-                    ORDER BY confidence_score DESC 
-                    LIMIT 1000
-                ''')
-            elif category == 'low_quality':
-                cursor = conn.execute('''
-                    SELECT * FROM asset_analysis 
-                    WHERE is_low_quality = 1 
-                    ORDER BY confidence_score DESC 
-                    LIMIT 1000
-                ''')
-            elif category == 'high_confidence':
-                cursor = conn.execute('''
-                    SELECT * FROM asset_analysis 
-                    WHERE confidence_score > 0.7 
-                    ORDER BY confidence_score DESC 
-                    LIMIT 1000
-                ''')
-            else:  # all
-                cursor = conn.execute('''
-                    SELECT * FROM asset_analysis 
-                    ORDER BY confidence_score DESC 
-                    LIMIT 1000
-                ''')
+                    SELECT * FROM analysis_results 
+                    WHERE category = ? 
+                    ORDER BY confidence_score DESC
+                ''', (category,))
             
             columns = [description[0] for description in cursor.description]
-            results = []
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
             
-            for row in cursor.fetchall():
-                result = dict(zip(columns, row))
-                # Parse JSON fields
-                result['flags'] = json.loads(result['flags']) if result['flags'] else []
-                result['recommendations'] = json.loads(result['recommendations']) if result['recommendations'] else []
-                results.append(result)
-            
-            return jsonify(results)
-            
+        return jsonify(results)
     except Exception as e:
-        logger.error(f"Error fetching results: {e}")
+        logger.error(f"Error fetching results: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/statistics')
 def get_statistics():
     """Get analysis statistics"""
+    if not cleaner_engine:
+        return jsonify({'error': 'Not configured'}), 400
+        
     try:
-        if not cleaner_engine:
-            return jsonify({'error': 'Not configured'}), 400
-            
         with sqlite3.connect(cleaner_engine.db_path) as conn:
-            # Total analyzed
-            total = conn.execute('SELECT COUNT(*) FROM asset_analysis').fetchone()[0]
+            # Get category counts
+            cursor = conn.execute('''
+                SELECT category, COUNT(*) as count, 
+                       AVG(confidence_score) as avg_confidence,
+                       SUM(file_size) as total_size
+                FROM analysis_results 
+                GROUP BY category
+            ''')
             
-            # By category
-            screenshots = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE is_screenshot = 1').fetchone()[0]
-            web_cache = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE is_web_cache = 1').fetchone()[0]
-            low_quality = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE is_low_quality = 1').fetchone()[0]
-            corrupt = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE is_corrupt = 1').fetchone()[0]
+            stats = {}
+            for row in cursor:
+                stats[row[0]] = {
+                    'count': row[1],
+                    'avg_confidence': row[2],
+                    'total_size': row[3] or 0
+                }
             
-            # High confidence unwanted
-            high_confidence = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE confidence_score > 0.7').fetchone()[0]
-            
-            # Marked for deletion
-            marked_deletion = conn.execute('SELECT COUNT(*) FROM asset_analysis WHERE marked_for_deletion = 1').fetchone()[0]
+            # Get total count
+            cursor = conn.execute('SELECT COUNT(*) FROM analysis_results')
+            total_count = cursor.fetchone()[0]
             
             return jsonify({
-                'total_analyzed': total,
-                'screenshots': screenshots,
-                'web_cache': web_cache,
-                'low_quality': low_quality,
-                'corrupt': corrupt,
-                'high_confidence_unwanted': high_confidence,
-                'marked_for_deletion': marked_deletion
+                'total_candidates': total_count,
+                'by_category': stats
             })
-            
     except Exception as e:
-        logger.error(f"Error fetching statistics: {e}")
+        logger.error(f"Error fetching statistics: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/mark_for_deletion', methods=['POST'])
 def mark_for_deletion():
-    """Mark assets for deletion"""
+    """Mark items for deletion"""
+    if not cleaner_engine:
+        return jsonify({'error': 'Not configured'}), 400
+        
     try:
-        if not cleaner_engine:
-            return jsonify({'error': 'Not configured'}), 400
-            
-        data = request.json
+        data = request.get_json()
         asset_ids = data.get('asset_ids', [])
         
         with sqlite3.connect(cleaner_engine.db_path) as conn:
-            for asset_id in asset_ids:
-                conn.execute(
-                    'UPDATE asset_analysis SET marked_for_deletion = 1 WHERE asset_id = ?',
-                    (asset_id,)
-                )
+            placeholders = ','.join(['?' for _ in asset_ids])
+            conn.execute(f'''
+                UPDATE analysis_results 
+                SET marked_for_deletion = 1 
+                WHERE id IN ({placeholders})
+            ''', asset_ids)
+            conn.commit()
         
         return jsonify({'success': True, 'marked_count': len(asset_ids)})
-        
     except Exception as e:
-        logger.error(f"Error marking for deletion: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        logger.error(f"Error marking for deletion: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# Socket.IO events
+@socketio.on('connect')
+def handle_connect():
+    logger.info('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logger.info('Client disconnected')
+
+# Load config on startup
+def load_startup_config():
+    """Load configuration on application startup"""
+    global cleaner_engine
+    try:
+        # Check if environment variables are set
+        immich_url = os.getenv('IMMICH_URL')
+        api_key = os.getenv('IMMICH_API_KEY')
+        
+        if immich_url and api_key:
+            logger.info("Loading configuration from environment variables")
+            cleaner_engine = ImmichImageCleaner(immich_url, api_key)
+            
+            # Save to config file for web interface
+            config = {'immich_url': immich_url, 'api_key': api_key}
+            with open('/app/data/config.json', 'w') as f:
+                json.dump(config, f)
+        else:
+            # Try loading from config file
+            with open('/app/data/config.json', 'r') as f:
+                config = json.load(f)
+                cleaner_engine = ImmichImageCleaner(
+                    config['immich_url'], 
+                    config['api_key']
+                )
+                logger.info("Configuration loaded from file")
+    except Exception as e:
+        logger.info(f"No saved configuration found: {str(e)}")
 
 if __name__ == '__main__':
-    # Create data directory
-    os.makedirs('/app/data', exist_ok=True)
-    
-    # Load config if exists
-    try:
-        with open('/app/data/config.json', 'r') as f:
-            config = json.load(f)
-            immich_client = ImmichAPIClient(config['immich_url'], config['api_key'])
-            cleaner_engine = ImageCleanerEngine(immich_client)
-            logger.info("Loaded existing configuration")
-    except:
-        logger.info("No existing configuration found")
-    
-    # Run the app
+    load_startup_config()
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)

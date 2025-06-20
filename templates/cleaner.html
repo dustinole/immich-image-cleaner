@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Immich Image Cleaner</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <style>
         * {
             margin: 0;
@@ -145,6 +144,10 @@
             background: #6c757d;
         }
         
+        .btn.danger {
+            background: #dc3545;
+        }
+        
         .alert {
             padding: 15px;
             border-radius: 8px;
@@ -206,16 +209,71 @@
             font-size: 0.9em;
         }
         
-        .version-info {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: rgba(255, 255, 255, 0.9);
-            padding: 10px 15px;
-            border-radius: 20px;
-            font-size: 0.8em;
+        .results-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e1e5e9;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
             color: #666;
-            backdrop-filter: blur(10px);
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .results-table th {
+            text-align: left;
+            padding: 12px;
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+            border-bottom: 2px solid #e1e5e9;
+        }
+        
+        .results-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e1e5e9;
+        }
+        
+        .results-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .checkbox {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        .filename {
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #333;
+        }
+        
+        .size {
+            color: #666;
+        }
+        
+        .reason {
+            font-size: 0.85em;
+            color: #666;
         }
         
         @media (max-width: 768px) {
@@ -229,6 +287,10 @@
             
             .card {
                 padding: 20px;
+            }
+            
+            .results-tabs {
+                flex-wrap: wrap;
             }
         }
     </style>
@@ -252,7 +314,7 @@
                 
                 <div class="form-group">
                     <label for="immich-url">Immich Server URL</label>
-                    <input type="text" id="immich-url" placeholder="http://192.168.1.100:2283/api">
+                    <input type="text" id="immich-url" placeholder="http://192.168.0.50:8484">
                 </div>
                 
                 <div class="form-group">
@@ -281,8 +343,7 @@
                 <div id="progress-text" style="display: none;"></div>
                 
                 <button class="btn" id="start-btn" onclick="startAnalysis()">Start Analysis</button>
-                <button class="btn secondary" onclick="refreshResults()">Refresh Results</button>
-                <button class="btn secondary" onclick="updateStatistics()">Update Statistics</button>
+                <button class="btn danger" id="stop-btn" onclick="stopAnalysis()" style="display: none;">Stop Analysis</button>
             </div>
         </div>
 
@@ -295,62 +356,77 @@
             <div class="card-content">
                 <div class="stats-grid" id="stats-container">
                     <div class="stat-card">
-                        <h3 id="total-candidates">0</h3>
-                        <p>Total Candidates</p>
+                        <h3 id="total-analyzed">0</h3>
+                        <p>Files Analyzed</p>
                     </div>
                     <div class="stat-card">
                         <h3 id="screenshots-count">0</h3>
                         <p>Screenshots</p>
                     </div>
                     <div class="stat-card">
-                        <h3 id="webcache-count">0</h3>
-                        <p>Web Cache</p>
+                        <h3 id="webfiles-count">0</h3>
+                        <p>Web Files</p>
                     </div>
                     <div class="stat-card">
                         <h3 id="recovery-count">0</h3>
                         <p>Recovery Artifacts</p>
                     </div>
                 </div>
+                <div style="margin-top: 15px; text-align: center;">
+                    <p>Total size: <strong id="total-size">0 MB</strong> | 
+                       Marked for deletion: <strong id="marked-count" style="color: #dc3545;">0</strong></p>
+                </div>
             </div>
         </div>
 
         <!-- Results Section -->
-        <div class="card">
+        <div class="card" id="results-card" style="display: none;">
             <h2>
                 <span class="icon">📋</span>
                 Cleanup Results
             </h2>
             <div class="card-content">
+                <div class="results-tabs">
+                    <button class="tab active" onclick="switchTab('screenshots')">
+                        Screenshots (<span id="tab-screenshots-count">0</span>)
+                    </button>
+                    <button class="tab" onclick="switchTab('web_files')">
+                        Web Files (<span id="tab-webfiles-count">0</span>)
+                    </button>
+                    <button class="tab" onclick="switchTab('recovery_artifacts')">
+                        Recovery Artifacts (<span id="tab-recovery-count">0</span>)
+                    </button>
+                </div>
+                
                 <div id="results-container">
-                    <p>No analysis results yet. Run an analysis to see cleanup candidates.</p>
+                    <p>Loading results...</p>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <button class="btn" onclick="markSelected()">Mark Selected for Deletion</button>
+                    <button class="btn secondary" onclick="exportCSV()">Export to CSV</button>
+                    <button class="btn danger" onclick="generateDeletionScript()">Generate Deletion Script</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="version-info" id="version-info">
-        Loading version...
-    </div>
-
     <script>
-        const socket = io();
         let isAnalysisRunning = false;
         let configuredSuccessfully = false;
+        let statusInterval = null;
+        let currentTab = 'screenshots';
+        let results = {
+            screenshots: [],
+            web_files: [],
+            recovery_artifacts: []
+        };
 
         // Initialize the application
         document.addEventListener('DOMContentLoaded', function() {
             loadConfig();
-            loadVersion();
             updateStatistics();
-        });
-
-        // Socket.IO event handlers
-        socket.on('analysis_update', function(data) {
-            updateAnalysisProgress(data);
-        });
-
-        socket.on('analysis_complete', function(data) {
-            onAnalysisComplete(data);
+            refreshResults();
         });
 
         function toggleCard(cardName) {
@@ -369,10 +445,13 @@
         function showMessage(elementId, message, type) {
             const element = document.getElementById(elementId);
             element.innerHTML = `<div class="alert ${type}">${message}</div>`;
-        }
-
-        function clearMessage(elementId) {
-            document.getElementById(elementId).innerHTML = '';
+            
+            // Auto-clear success messages after 5 seconds
+            if (type === 'success') {
+                setTimeout(() => {
+                    element.innerHTML = '';
+                }, 5000);
+            }
         }
 
         async function loadConfig() {
@@ -381,15 +460,15 @@
                 const data = await response.json();
                 
                 document.getElementById('immich-url').value = data.immich_url || '';
+                if (data.immich_api_key) {
+                    document.getElementById('api-key').value = '••••••••••••••••';
+                }
                 
-                if (data.has_api_key && data.immich_url) {
+                if (data.immich_url && data.immich_api_key) {
                     configuredSuccessfully = true;
-                    showMessage('config-message', 'Configuration loaded successfully!', 'success');
                     // Auto-collapse config if already configured
-                    setTimeout(() => {
-                        document.getElementById('config-content').classList.add('collapsed');
-                        document.getElementById('config-toggle').classList.add('collapsed');
-                    }, 2000);
+                    document.getElementById('config-content').classList.add('collapsed');
+                    document.getElementById('config-toggle').classList.add('collapsed');
                 }
             } catch (error) {
                 console.error('Error loading config:', error);
@@ -405,6 +484,12 @@
                 return;
             }
             
+            // Don't send the placeholder value
+            if (apiKey === '••••••••••••••••') {
+                showMessage('config-message', 'Please enter a new API key.', 'error');
+                return;
+            }
+            
             try {
                 const response = await fetch('/api/config', {
                     method: 'POST',
@@ -413,7 +498,7 @@
                     },
                     body: JSON.stringify({
                         immich_url: immichUrl,
-                        api_key: apiKey
+                        immich_api_key: apiKey
                     })
                 });
                 
@@ -426,7 +511,7 @@
                     setTimeout(() => {
                         document.getElementById('config-content').classList.add('collapsed');
                         document.getElementById('config-toggle').classList.add('collapsed');
-                    }, 3000);
+                    }, 2000);
                 } else {
                     showMessage('config-message', data.message, 'error');
                 }
@@ -458,10 +543,12 @@
                 
                 if (data.success) {
                     isAnalysisRunning = true;
-                    document.getElementById('start-btn').disabled = true;
+                    document.getElementById('start-btn').style.display = 'none';
+                    document.getElementById('stop-btn').style.display = 'inline-block';
                     document.getElementById('progress-container').style.display = 'block';
                     document.getElementById('progress-text').style.display = 'block';
                     showMessage('analysis-message', 'Analysis started successfully!', 'success');
+                    startStatusPolling();
                 } else {
                     showMessage('analysis-message', data.message, 'error');
                 }
@@ -470,32 +557,58 @@
             }
         }
 
-        function updateAnalysisProgress(data) {
-            document.getElementById('analysis-status').textContent = data.status;
-            
-            if (data.progress !== undefined) {
-                document.getElementById('progress-bar').style.width = data.progress + '%';
-                document.getElementById('progress-text').textContent = 
-                    `Progress: ${Math.round(data.progress)}% (${data.candidates_found || 0} candidates found)`;
+        async function stopAnalysis() {
+            try {
+                await fetch('/api/analyze/stop', { method: 'POST' });
+                isAnalysisRunning = false;
+                stopStatusPolling();
+                document.getElementById('start-btn').style.display = 'inline-block';
+                document.getElementById('stop-btn').style.display = 'none';
+                showMessage('analysis-message', 'Analysis stopped.', 'success');
+            } catch (error) {
+                showMessage('analysis-message', 'Error stopping analysis: ' + error.message, 'error');
             }
         }
 
-        function onAnalysisComplete(data) {
-            isAnalysisRunning = false;
-            document.getElementById('start-btn').disabled = false;
-            
-            if (data.error) {
-                showMessage('analysis-message', 'Analysis failed: ' + data.error, 'error');
-            } else {
-                showMessage('analysis-message', 
-                    `Analysis completed! Processed ${data.total_processed} assets, found ${data.candidates_found} cleanup candidates.`, 
-                    'success');
-                updateStatistics();
-                refreshResults();
+        function startStatusPolling() {
+            statusInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/analyze/status');
+                    const data = await response.json();
+                    
+                    if (data.total > 0) {
+                        const progress = (data.progress / data.total) * 100;
+                        document.getElementById('progress-bar').style.width = progress + '%';
+                        document.getElementById('progress-text').textContent = 
+                            `Progress: ${data.progress} / ${data.total} files (${data.found_count} candidates found)`;
+                        document.getElementById('analysis-status').textContent = 
+                            `Analyzing: ${data.current_file || 'Unknown'}`;
+                    }
+                    
+                    if (!data.running) {
+                        isAnalysisRunning = false;
+                        stopStatusPolling();
+                        document.getElementById('start-btn').style.display = 'inline-block';
+                        document.getElementById('stop-btn').style.display = 'none';
+                        document.getElementById('progress-container').style.display = 'none';
+                        document.getElementById('progress-text').style.display = 'none';
+                        showMessage('analysis-message', 
+                            `Analysis completed! Analyzed ${data.progress} files, found ${data.found_count} cleanup candidates.`, 
+                            'success');
+                        updateStatistics();
+                        refreshResults();
+                    }
+                } catch (error) {
+                    console.error('Error polling status:', error);
+                }
+            }, 1000);
+        }
+
+        function stopStatusPolling() {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+                statusInterval = null;
             }
-            
-            document.getElementById('progress-container').style.display = 'none';
-            document.getElementById('progress-text').style.display = 'none';
         }
 
         async function updateStatistics() {
@@ -503,19 +616,12 @@
                 const response = await fetch('/api/statistics');
                 const data = await response.json();
                 
-                if (data.error) {
-                    console.error('Statistics error:', data.error);
-                    return;
-                }
-                
-                document.getElementById('total-candidates').textContent = data.total_candidates || 0;
-                document.getElementById('screenshots-count').textContent = 
-                    data.by_category?.screenshot?.count || 0;
-                document.getElementById('webcache-count').textContent = 
-                    data.by_category?.web_cache?.count || 0;
-                document.getElementById('recovery-count').textContent = 
-                    data.by_category?.recovery_artifact?.count || 0;
-                    
+                document.getElementById('total-analyzed').textContent = data.total_analyzed || 0;
+                document.getElementById('screenshots-count').textContent = data.screenshots_found || 0;
+                document.getElementById('webfiles-count').textContent = data.web_files_found || 0;
+                document.getElementById('recovery-count').textContent = data.recovery_artifacts_found || 0;
+                document.getElementById('total-size').textContent = (data.total_size_mb || 0) + ' MB';
+                document.getElementById('marked-count').textContent = data.marked_for_deletion || 0;
             } catch (error) {
                 console.error('Error updating statistics:', error);
             }
@@ -526,73 +632,128 @@
                 const response = await fetch('/api/results');
                 const data = await response.json();
                 
-                if (data.error) {
-                    document.getElementById('results-container').innerHTML = 
-                        '<p>Error loading results: ' + data.error + '</p>';
-                    return;
+                results = data;
+                
+                // Update tab counts
+                document.getElementById('tab-screenshots-count').textContent = results.screenshots.length;
+                document.getElementById('tab-webfiles-count').textContent = results.web_files.length;
+                document.getElementById('tab-recovery-count').textContent = results.recovery_artifacts.length;
+                
+                // Show results card if we have any results
+                if (results.screenshots.length > 0 || results.web_files.length > 0 || results.recovery_artifacts.length > 0) {
+                    document.getElementById('results-card').style.display = 'block';
+                    displayResults();
                 }
-                
-                if (data.length === 0) {
-                    document.getElementById('results-container').innerHTML = 
-                        '<p>No cleanup candidates found. Run an analysis to detect screenshots, web cache, and recovery artifacts.</p>';
-                    return;
-                }
-                
-                // Display results in a table
-                let html = `
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <thead>
-                            <tr style="background-color: #f8f9fa;">
-                                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Filename</th>
-                                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Category</th>
-                                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Confidence</th>
-                                <th style="padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6;">Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
-                
-                data.slice(0, 100).forEach(item => {
-                    const confidence = Math.round(item.confidence_score * 100);
-                    html += `
-                        <tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 10px;">${item.filename}</td>
-                            <td style="padding: 10px;">
-                                <span style="background-color: #e9ecef; padding: 4px 8px; border-radius: 4px; font-size: 0.8em;">
-                                    ${item.category}
-                                </span>
-                            </td>
-                            <td style="padding: 10px;">${confidence}%</td>
-                            <td style="padding: 10px; font-size: 0.9em; color: #666;">${item.reasons}</td>
-                        </tr>
-                    `;
-                });
-                
-                html += '</tbody></table>';
-                
-                if (data.length > 100) {
-                    html += `<p style="margin-top: 15px; color: #666; font-style: italic;">
-                        Showing first 100 results of ${data.length} total candidates.
-                    </p>`;
-                }
-                
-                document.getElementById('results-container').innerHTML = html;
-                
             } catch (error) {
                 console.error('Error refreshing results:', error);
-                document.getElementById('results-container').innerHTML = 
-                    '<p>Error loading results. Please try again.</p>';
             }
         }
 
-        async function loadVersion() {
-            try {
-                const response = await fetch('/api/version');
-                const data = await response.json();
-                document.getElementById('version-info').textContent = `v${data.version || 'unknown'}`;
-            } catch (error) {
-                document.getElementById('version-info').textContent = 'Version unknown';
+        function switchTab(tab) {
+            currentTab = tab;
+            
+            // Update active tab
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            displayResults();
+        }
+
+        function displayResults() {
+            const items = results[currentTab] || [];
+            const container = document.getElementById('results-container');
+            
+            if (items.length === 0) {
+                container.innerHTML = '<p>No items in this category.</p>';
+                return;
             }
+            
+            let html = `
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;">
+                                <input type="checkbox" class="checkbox" onchange="toggleAll(this)">
+                            </th>
+                            <th>Filename</th>
+                            <th>Size</th>
+                            <th>Date</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            items.forEach(item => {
+                html += `
+                    <tr>
+                        <td>
+                            <input type="checkbox" class="checkbox" data-id="${item.id}" ${item.marked ? 'checked' : ''}>
+                        </td>
+                        <td class="filename">${item.filename}</td>
+                        <td class="size">${formatFileSize(item.size)}</td>
+                        <td>${formatDate(item.date)}</td>
+                        <td class="reason">${item.reason}</td>
+                    </tr>
+                `;
+            });
+            
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function toggleAll(checkbox) {
+            const checkboxes = document.querySelectorAll('#results-container .checkbox[data-id]');
+            checkboxes.forEach(cb => cb.checked = checkbox.checked);
+        }
+
+        async function markSelected() {
+            const checkboxes = document.querySelectorAll('#results-container .checkbox[data-id]:checked');
+            const assetIds = Array.from(checkboxes).map(cb => cb.dataset.id);
+            
+            if (assetIds.length === 0) {
+                alert('No items selected');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/mark_for_deletion', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_ids: assetIds, mark: true })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    alert(data.message);
+                    updateStatistics();
+                }
+            } catch (error) {
+                alert('Error marking items: ' + error.message);
+            }
+        }
+
+        function exportCSV() {
+            window.location.href = '/api/export/csv';
+        }
+
+        function generateDeletionScript() {
+            if (confirm('Generate deletion script for all marked items? This will create a script to permanently delete these assets from Immich.')) {
+                window.location.href = '/api/export/deletion_script';
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (!bytes) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return '';
+            return new Date(dateString).toLocaleDateString();
         }
     </script>
 </body>

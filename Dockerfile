@@ -30,12 +30,12 @@ ENV PYTHONPATH=/app
 ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
 
-# Expose port
-EXPOSE 5000
+# Expose port (changed from 5000 to 5001)
+EXPOSE 5001
 
-# Health check
+# Health check (updated port from 5000 to 5001)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+    CMD curl -f http://localhost:5001/health || exit 1
 
 # Run the application
 CMD ["python", "app.py"]

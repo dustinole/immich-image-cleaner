@@ -1114,45 +1114,26 @@
                 const items = results[currentTab] || [];
                 currentImageList = items;
                 
-                // Get the config
-                const config = await fetch('/api/config').then(r => r.json());
+                // Use our proxy endpoint
+                const proxyUrl = `/api/proxy/thumbnail/${assetId}`;
                 
-                // Try different Immich API endpoints for the thumbnail
-                const endpoints = [
-                    `${config.immich_url}/api/asset/thumbnail/${assetId}?size=preview`,
-                    `${config.immich_url}/api/assets/${assetId}/thumbnail?size=preview`,
-                    `${config.immich_url}/api/asset/thumbnail/${assetId}`,
-                    `${config.immich_url}/api/asset/file/${assetId}?isThumb=true`
-                ];
-                
-                let imageLoaded = false;
-                
-                for (const url of endpoints) {
-                    if (imageLoaded) break;
-                    
-                    try {
-                        const response = await fetch(url, {
-                            headers: {
-                                'X-Api-Key': config.immich_api_key,
-                                'Accept': 'image/*'
-                            }
-                        });
-                        
-                        if (response.ok) {
-                            const blob = await response.blob();
-                            modalImg.src = URL.createObjectURL(blob);
-                            modalInfo.textContent = `${filename} (${currentImageIndex + 1}/${currentImageList.length})`;
-                            imageLoaded = true;
-                        }
-                    } catch (err) {
-                        console.log(`Failed endpoint ${url}:`, err);
-                    }
-                }
-                
-                if (!imageLoaded) {
+                try {
+                    // Create new image element to test loading
+                    const img = new Image();
+                    img.onload = function() {
+                        modalImg.src = this.src;
+                        modalInfo.textContent = `${filename} (${currentImageIndex + 1}/${currentImageList.length})`;
+                    };
+                    img.onerror = function() {
+                        modalImg.src = '';
+                        modalInfo.textContent = 'Unable to load preview';
+                        console.error('Image failed to load from proxy');
+                    };
+                    img.src = proxyUrl;
+                } catch (err) {
                     modalImg.src = '';
-                    modalInfo.textContent = 'Unable to load preview - check console for errors';
-                    console.error('All thumbnail endpoints failed for asset:', assetId);
+                    modalInfo.textContent = 'Error loading preview: ' + err.message;
+                    console.error('Error:', err);
                 }
                 
             } catch (error) {

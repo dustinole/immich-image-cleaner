@@ -1,6 +1,7 @@
 from flask import Flask, render_template, jsonify, request, send_file
 from flask_cors import CORS
 import os
+import json
 import threading
 import logging
 from immich_cleaner import ImmichCleaner

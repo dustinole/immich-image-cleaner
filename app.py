@@ -2,6 +2,7 @@ from flask import Flask, render_template, jsonify, request, send_file
 from flask_cors import CORS
 import os
 import json
+import io
 import threading
 import logging
 from immich_cleaner import ImmichCleaner
@@ -246,6 +247,50 @@ def export_csv():
             'success': False,
             'message': str(e)
         }), 500
+
+@app.route('/api/proxy/thumbnail/<asset_id>')
+def proxy_thumbnail(asset_id):
+    """Proxy endpoint to fetch Immich thumbnails"""
+    try:
+        immich_url = os.getenv('IMMICH_URL', '')
+        api_key = os.getenv('IMMICH_API_KEY', '')
+        
+        if not immich_url or not api_key:
+            return jsonify({'error': 'Not configured'}), 500
+        
+        # Try different Immich endpoints
+        endpoints = [
+            f"{immich_url}/api/asset/thumbnail/{asset_id}?size=preview",
+            f"{immich_url}/api/assets/{asset_id}/thumbnail?size=preview",
+            f"{immich_url}/api/asset/thumbnail/{asset_id}",
+            f"{immich_url}/api/asset/file/{asset_id}?isThumb=true"
+        ]
+        
+        headers = {
+            'X-Api-Key': api_key,
+            'Accept': 'image/*'
+        }
+        
+        for endpoint in endpoints:
+            try:
+                response = requests.get(endpoint, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    # Return the image with proper headers
+                    return send_file(
+                        io.BytesIO(response.content),
+                        mimetype=response.headers.get('Content-Type', 'image/jpeg'),
+                        as_attachment=False
+                    )
+            except Exception as e:
+                logger.debug(f"Endpoint {endpoint} failed: {e}")
+                continue
+        
+        # If all endpoints fail, return error
+        return jsonify({'error': 'Failed to fetch thumbnail'}), 404
+        
+    except Exception as e:
+        logger.error(f"Error proxying thumbnail: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/feedback', methods=['POST'])
 def save_feedback():

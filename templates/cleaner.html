@@ -337,7 +337,7 @@
             margin: auto;
             display: block;
             max-width: 90%;
-            max-height: 90%;
+            max-height: 80%;
             margin-top: 2%;
         }
         
@@ -357,7 +357,7 @@
         
         .modal-info {
             position: absolute;
-            bottom: 20px;
+            bottom: 80px;
             left: 50%;
             transform: translateX(-50%);
             color: white;
@@ -365,6 +365,94 @@
             padding: 15px;
             border-radius: 8px;
             text-align: center;
+            max-width: 80%;
+        }
+        
+        .modal-nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            color: white;
+            font-size: 48px;
+            cursor: pointer;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 20px;
+            border-radius: 5px;
+            user-select: none;
+        }
+        
+        .modal-nav:hover {
+            background: rgba(0, 0, 0, 0.8);
+        }
+        
+        .modal-nav.prev {
+            left: 20px;
+        }
+        
+        .modal-nav.next {
+            right: 20px;
+        }
+        
+        .modal-actions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+        }
+        
+        .modal-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        .modal-btn.correct {
+            background: #28a745;
+            color: white;
+        }
+        
+        .modal-btn.incorrect {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .modal-btn.delete {
+            background: #ffc107;
+            color: #000;
+        }
+        
+        .modal-btn:hover {
+            transform: scale(1.05);
+        }
+        
+        .auto-scan-info {
+            background: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .auto-scan-info .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #155724;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 2s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         
         .learning-log {
@@ -440,6 +528,11 @@
             <div class="card-content">
                 <div id="analysis-message"></div>
                 
+                <div class="auto-scan-info" id="auto-scan-info">
+                    <div class="spinner"></div>
+                    <span>Auto-scanning is active. Results update every 5 minutes.</span>
+                </div>
+                
                 <div id="analysis-status">Ready to start analysis</div>
                 
                 <div class="progress-bar" style="display: none;" id="progress-container">
@@ -447,8 +540,9 @@
                 </div>
                 <div id="progress-text" style="display: none;"></div>
                 
-                <button class="btn" id="start-btn" onclick="startAnalysis()">Start Analysis</button>
+                <button class="btn" id="start-btn" onclick="startAnalysis()" style="display: none;">Start Manual Scan</button>
                 <button class="btn danger" id="stop-btn" onclick="stopAnalysis()" style="display: none;">Stop Analysis</button>
+                <button class="btn secondary" onclick="toggleAutoScan()">Toggle Auto-Scan</button>
             </div>
         </div>
 
@@ -523,12 +617,19 @@
     </div>
 
     <!-- Image Preview Modal -->
-    <div id="imageModal" class="modal" onclick="closeModal(event)">
+    <div id="imageModal" class="modal">
         <span class="modal-close" onclick="closeModal()">&times;</span>
-        <img class="modal-content" id="modalImage">
+        <span class="modal-nav prev" onclick="navigateImage(-1)">‹</span>
+        <span class="modal-nav next" onclick="navigateImage(1)">›</span>
+        <img class="modal-content" id="modalImage" alt="Preview">
         <div class="modal-info">
             <p id="modalFilename"></p>
             <p id="modalInfo"></p>
+        </div>
+        <div class="modal-actions">
+            <button class="modal-btn correct" onclick="quickFeedback('correct')">✓ Correct Detection</button>
+            <button class="modal-btn incorrect" onclick="quickFeedback('incorrect')">✗ Wrong Detection</button>
+            <button class="modal-btn delete" onclick="quickMark()">🗑️ Mark for Deletion</button>
         </div>
     </div>
 
@@ -833,7 +934,7 @@
                         <td>
                             <input type="checkbox" class="checkbox" data-id="${item.id}" ${item.marked ? 'checked' : ''}>
                         </td>
-                        <td class="filename" onclick="showPreview('${item.id}', '${item.filename}')">${item.filename}</td>
+                        <td class="filename" onclick="showPreview('${item.id}', '${item.filename}', ${items.indexOf(item)})">${item.filename}</td>
                         <td class="size">${formatFileSize(item.size)}</td>
                         <td>${formatDate(item.date)}</td>
                         <td class="reason">${item.reason}</td>
@@ -862,11 +963,10 @@
             checkboxes.forEach(cb => cb.checked = checkbox.checked);
         }
 
-        async function markSelected() {
-            const checkboxes = document.querySelectorAll('#results-container .checkbox[data-id]:checked');
-            const assetIds = Array.from(checkboxes).map(cb => cb.dataset.id);
+        async function markSelected(assetIds) {
+            const selectedIds = assetIds || Array.from(document.querySelectorAll('#results-container .checkbox[data-id]:checked')).map(cb => cb.dataset.id);
             
-            if (assetIds.length === 0) {
+            if (selectedIds.length === 0) {
                 alert('No items selected');
                 return;
             }
@@ -875,12 +975,12 @@
                 const response = await fetch('/api/mark_for_deletion', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ asset_ids: assetIds, mark: true })
+                    body: JSON.stringify({ asset_ids: selectedIds, mark: true })
                 });
                 
                 const data = await response.json();
                 if (data.success) {
-                    alert(data.message);
+                    if (!assetIds) alert(data.message);
                     updateStatistics();
                 }
             } catch (error) {
@@ -994,9 +1094,13 @@
             }
         }
         
-        // Image preview
-        async function showPreview(assetId, filename) {
+        // Image preview with navigation
+        async function showPreview(assetId, filename, index) {
             try {
+                if (index !== undefined) {
+                    currentImageIndex = index;
+                }
+                
                 const modal = document.getElementById('imageModal');
                 const modalImg = document.getElementById('modalImage');
                 const modalFilename = document.getElementById('modalFilename');
@@ -1006,42 +1110,132 @@
                 modalFilename.textContent = filename;
                 modalInfo.textContent = 'Loading...';
                 
+                // Update current list based on active tab
+                const items = results[currentTab] || [];
+                currentImageList = items;
+                
                 // Get the thumbnail URL from Immich
                 const config = await fetch('/api/config').then(r => r.json());
                 const thumbnailUrl = `${config.immich_url}/api/assets/${assetId}/thumbnail?size=preview`;
                 
-                // Create image with auth header
-                const img = new Image();
-                img.onload = function() {
-                    modalImg.src = this.src;
-                    modalInfo.textContent = `${filename} - Click outside to close`;
-                };
-                img.onerror = function() {
-                    modalInfo.textContent = 'Unable to load preview';
-                };
-                
-                // Fetch with API key
-                fetch(thumbnailUrl, {
-                    headers: {
-                        'X-Api-Key': config.immich_api_key
+                // Load image with authentication
+                try {
+                    const response = await fetch(thumbnailUrl, {
+                        headers: {
+                            'X-Api-Key': config.immich_api_key
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        modalImg.src = URL.createObjectURL(blob);
+                        modalInfo.textContent = `${filename} (${currentImageIndex + 1}/${currentImageList.length})`;
+                    } else {
+                        modalImg.src = '';
+                        modalInfo.textContent = 'Unable to load preview - ' + response.status;
                     }
-                })
-                .then(response => response.blob())
-                .then(blob => {
-                    img.src = URL.createObjectURL(blob);
-                })
-                .catch(err => {
+                } catch (err) {
+                    modalImg.src = '';
                     modalInfo.textContent = 'Error loading preview: ' + err.message;
-                });
+                }
                 
             } catch (error) {
                 console.error('Error showing preview:', error);
             }
         }
         
-        function closeModal(event) {
-            if (event && event.target !== event.currentTarget) return;
+        function navigateImage(direction) {
+            const newIndex = currentImageIndex + direction;
+            if (newIndex >= 0 && newIndex < currentImageList.length) {
+                const item = currentImageList[newIndex];
+                showPreview(item.id, item.filename, newIndex);
+            }
+        }
+        
+        function closeModal() {
             document.getElementById('imageModal').style.display = 'none';
+            if (document.getElementById('modalImage').src.startsWith('blob:')) {
+                URL.revokeObjectURL(document.getElementById('modalImage').src);
+            }
+        }
+        
+        async function quickFeedback(feedback) {
+            if (currentImageList.length > 0) {
+                const item = currentImageList[currentImageIndex];
+                provideFeedback(item.id, item.filename, currentTab, feedback, item.reason);
+                
+                // Update the table view
+                displayResults();
+                
+                // Auto-advance to next image
+                setTimeout(() => navigateImage(1), 300);
+            }
+        }
+        
+        async function quickMark() {
+            if (currentImageList.length > 0) {
+                const item = currentImageList[currentImageIndex];
+                item.marked = true;
+                
+                // Update the checkbox in the table
+                const checkbox = document.querySelector(`input[data-id="${item.id}"]`);
+                if (checkbox) checkbox.checked = true;
+                
+                // Mark for deletion
+                await markSelected([item.id]);
+                
+                // Auto-advance to next image
+                setTimeout(() => navigateImage(1), 300);
+            }
+        }
+        
+        // Auto-scan functionality
+        function startAutoScan() {
+            // Run initial scan
+            checkAndRunAnalysis();
+            
+            // Set up periodic scanning (every 5 minutes)
+            autoScanInterval = setInterval(() => {
+                checkAndRunAnalysis();
+            }, 5 * 60 * 1000); // 5 minutes
+            
+            document.getElementById('auto-scan-info').style.display = 'flex';
+        }
+        
+        function stopAutoScan() {
+            if (autoScanInterval) {
+                clearInterval(autoScanInterval);
+                autoScanInterval = null;
+            }
+            document.getElementById('auto-scan-info').style.display = 'none';
+        }
+        
+        function toggleAutoScan() {
+            autoScanEnabled = !autoScanEnabled;
+            if (autoScanEnabled) {
+                startAutoScan();
+                showMessage('analysis-message', 'Auto-scan enabled', 'success');
+            } else {
+                stopAutoScan();
+                showMessage('analysis-message', 'Auto-scan disabled', 'success');
+            }
+        }
+        
+        async function checkAndRunAnalysis() {
+            // Check if analysis is already running
+            const statusResponse = await fetch('/api/analyze/status');
+            const status = await statusResponse.json();
+            
+            if (!status.running) {
+                // Start analysis silently
+                await fetch('/api/analyze/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                // Start monitoring
+                startStatusPolling();
+            }
         }
     </script>
 </body>

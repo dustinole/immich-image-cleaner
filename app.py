@@ -29,7 +29,7 @@ analysis_status = {
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('cleaner.html')
 
 @app.route('/api/config', methods=['GET'])
 def get_config():

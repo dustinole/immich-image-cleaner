@@ -28,8 +28,8 @@ analysis_status = {
 
 @app.route('/')
 def index():
-    return render_template('cleaner.html')
-    
+    return render_template('index.html')
+
 @app.route('/api/config', methods=['GET'])
 def get_config():
     """Get current configuration"""
@@ -246,6 +246,35 @@ def export_csv():
             'message': str(e)
         }), 500
 
+@app.route('/api/feedback', methods=['POST'])
+def save_feedback():
+    """Save user feedback for learning"""
+    data = request.json
+    
+    # Log feedback to a file for future improvements
+    feedback_file = '/data/feedback_log.json'
+    
+    try:
+        # Load existing feedback
+        if os.path.exists(feedback_file):
+            with open(feedback_file, 'r') as f:
+                feedback_data = json.load(f)
+        else:
+            feedback_data = []
+        
+        # Add new feedback
+        feedback_data.append(data)
+        
+        # Save updated feedback
+        os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
+        with open(feedback_file, 'w') as f:
+            json.dump(feedback_data, f, indent=2)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error saving feedback: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/export/deletion_script', methods=['GET'])
 def export_deletion_script():
     """Export deletion script"""
@@ -263,6 +292,11 @@ def export_deletion_script():
             'success': False,
             'message': str(e)
         }), 500
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy'}), 200
 
 def run_analysis():
     """Run the analysis in background"""

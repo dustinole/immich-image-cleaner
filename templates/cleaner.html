@@ -421,9 +421,9 @@
             color: white;
         }
         
-        .modal-btn.delete {
-            background: #ffc107;
-            color: #000;
+        .modal-btn.secondary {
+            background: #6c757d;
+            color: white;
         }
         
         .modal-btn:hover {
@@ -627,9 +627,9 @@
             <p id="modalInfo"></p>
         </div>
         <div class="modal-actions">
-            <button class="modal-btn correct" onclick="quickFeedback('correct')">✓ Correct Detection</button>
-            <button class="modal-btn incorrect" onclick="quickFeedback('incorrect')">✗ Wrong Detection</button>
-            <button class="modal-btn delete" onclick="quickMark()">🗑️ Mark for Deletion</button>
+            <button class="modal-btn correct" onclick="quickFeedback('correct')">✓ Delete (Correct Detection)</button>
+            <button class="modal-btn incorrect" onclick="quickFeedback('incorrect')">✗ Keep (Wrong Detection)</button>
+            <button class="modal-btn secondary" onclick="navigateImage(1)">Skip →</button>
         </div>
     </div>
 
@@ -1114,29 +1114,45 @@
                 const items = results[currentTab] || [];
                 currentImageList = items;
                 
-                // Get the thumbnail URL from Immich
+                // Get the config
                 const config = await fetch('/api/config').then(r => r.json());
-                const thumbnailUrl = `${config.immich_url}/api/assets/${assetId}/thumbnail?size=preview`;
                 
-                // Load image with authentication
-                try {
-                    const response = await fetch(thumbnailUrl, {
-                        headers: {
-                            'X-Api-Key': config.immich_api_key
-                        }
-                    });
+                // Try different Immich API endpoints for the thumbnail
+                const endpoints = [
+                    `${config.immich_url}/api/asset/thumbnail/${assetId}?size=preview`,
+                    `${config.immich_url}/api/assets/${assetId}/thumbnail?size=preview`,
+                    `${config.immich_url}/api/asset/thumbnail/${assetId}`,
+                    `${config.immich_url}/api/asset/file/${assetId}?isThumb=true`
+                ];
+                
+                let imageLoaded = false;
+                
+                for (const url of endpoints) {
+                    if (imageLoaded) break;
                     
-                    if (response.ok) {
-                        const blob = await response.blob();
-                        modalImg.src = URL.createObjectURL(blob);
-                        modalInfo.textContent = `${filename} (${currentImageIndex + 1}/${currentImageList.length})`;
-                    } else {
-                        modalImg.src = '';
-                        modalInfo.textContent = 'Unable to load preview - ' + response.status;
+                    try {
+                        const response = await fetch(url, {
+                            headers: {
+                                'X-Api-Key': config.immich_api_key,
+                                'Accept': 'image/*'
+                            }
+                        });
+                        
+                        if (response.ok) {
+                            const blob = await response.blob();
+                            modalImg.src = URL.createObjectURL(blob);
+                            modalInfo.textContent = `${filename} (${currentImageIndex + 1}/${currentImageList.length})`;
+                            imageLoaded = true;
+                        }
+                    } catch (err) {
+                        console.log(`Failed endpoint ${url}:`, err);
                     }
-                } catch (err) {
+                }
+                
+                if (!imageLoaded) {
                     modalImg.src = '';
-                    modalInfo.textContent = 'Error loading preview: ' + err.message;
+                    modalInfo.textContent = 'Unable to load preview - check console for errors';
+                    console.error('All thumbnail endpoints failed for asset:', assetId);
                 }
                 
             } catch (error) {
@@ -1162,7 +1178,21 @@
         async function quickFeedback(feedback) {
             if (currentImageList.length > 0) {
                 const item = currentImageList[currentImageIndex];
+                
+                // Provide feedback
                 provideFeedback(item.id, item.filename, currentTab, feedback, item.reason);
+                
+                // If correct detection, also mark for deletion
+                if (feedback === 'correct') {
+                    item.marked = true;
+                    
+                    // Update the checkbox in the table
+                    const checkbox = document.querySelector(`input[data-id="${item.id}"]`);
+                    if (checkbox) checkbox.checked = true;
+                    
+                    // Mark for deletion
+                    await markSelected([item.id]);
+                }
                 
                 // Update the table view
                 displayResults();

@@ -265,6 +265,12 @@
             font-family: monospace;
             font-size: 0.9em;
             color: #333;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        
+        .filename:hover {
+            color: #667eea;
         }
         
         .size {
@@ -274,6 +280,104 @@
         .reason {
             font-size: 0.85em;
             color: #666;
+        }
+        
+        .feedback-btns {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .feedback-btn {
+            padding: 4px 8px;
+            border: 1px solid #e1e5e9;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+            font-size: 0.8em;
+            transition: all 0.2s ease;
+        }
+        
+        .feedback-btn:hover {
+            transform: scale(1.05);
+        }
+        
+        .feedback-btn.correct {
+            color: #28a745;
+            border-color: #28a745;
+        }
+        
+        .feedback-btn.correct.active {
+            background: #28a745;
+            color: white;
+        }
+        
+        .feedback-btn.incorrect {
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+        
+        .feedback-btn.incorrect.active {
+            background: #dc3545;
+            color: white;
+        }
+        
+        /* Image preview modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+        }
+        
+        .modal-content {
+            margin: auto;
+            display: block;
+            max-width: 90%;
+            max-height: 90%;
+            margin-top: 2%;
+        }
+        
+        .modal-close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        .modal-close:hover {
+            color: #bbb;
+        }
+        
+        .modal-info {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .learning-log {
+            background: #f8f9fa;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            font-family: monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
         }
         
         @media (max-width: 768px) {
@@ -319,7 +423,8 @@
                 
                 <div class="form-group">
                     <label for="api-key">Immich API Key</label>
-                    <input type="password" id="api-key" placeholder="Your Immich API key">
+                    <input type="password" id="api-key" placeholder="Your Immich API key" 
+                           onfocus="if(this.dataset.hasKey === 'true' && this.value.includes('••••')) { this.value = ''; this.dataset.hasKey = 'false'; }">
                 </div>
                 
                 <button class="btn" onclick="saveConfig()">Save & Test Connection</button>
@@ -406,8 +511,24 @@
                     <button class="btn" onclick="markSelected()">Mark Selected for Deletion</button>
                     <button class="btn secondary" onclick="exportCSV()">Export to CSV</button>
                     <button class="btn danger" onclick="generateDeletionScript()">Generate Deletion Script</button>
+                    <button class="btn secondary" onclick="showLearningLog()">Show Learning Log</button>
+                </div>
+                
+                <div id="learning-log-container" style="display: none;">
+                    <h3 style="margin-top: 20px;">Learning Log (Copy this for feedback)</h3>
+                    <div class="learning-log" id="learning-log"></div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Image Preview Modal -->
+    <div id="imageModal" class="modal" onclick="closeModal(event)">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img class="modal-content" id="modalImage">
+        <div class="modal-info">
+            <p id="modalFilename"></p>
+            <p id="modalInfo"></p>
         </div>
     </div>
 
@@ -460,15 +581,24 @@
                 const data = await response.json();
                 
                 document.getElementById('immich-url').value = data.immich_url || '';
-                if (data.immich_api_key) {
-                    document.getElementById('api-key').value = '••••••••••••••••';
-                }
                 
-                if (data.immich_url && data.immich_api_key) {
+                // Handle API key display
+                const apiKeyInput = document.getElementById('api-key');
+                if (data.immich_api_key) {
+                    // Show masked version of the API key
+                    const maskedKey = data.immich_api_key.substring(0, 8) + '••••••••••••••••';
+                    apiKeyInput.value = maskedKey;
+                    apiKeyInput.dataset.hasKey = 'true';
                     configuredSuccessfully = true;
+                    
                     // Auto-collapse config if already configured
                     document.getElementById('config-content').classList.add('collapsed');
                     document.getElementById('config-toggle').classList.add('collapsed');
+                    
+                    // Show success state
+                    const configCard = document.getElementById('config-card');
+                    const h2 = configCard.querySelector('h2');
+                    h2.innerHTML = '<span class="icon">⚙️</span> Configuration <span style="color: #28a745; font-size: 0.9em;">✓ Connected</span> <span class="toggle collapsed" id="config-toggle">▲</span>';
                 }
             } catch (error) {
                 console.error('Error loading config:', error);
@@ -477,16 +607,17 @@
 
         async function saveConfig() {
             const immichUrl = document.getElementById('immich-url').value.trim();
-            const apiKey = document.getElementById('api-key').value.trim();
+            const apiKeyInput = document.getElementById('api-key');
+            const apiKey = apiKeyInput.value.trim();
             
             if (!immichUrl || !apiKey) {
                 showMessage('config-message', 'Please fill in both URL and API key.', 'error');
                 return;
             }
             
-            // Don't send the placeholder value
-            if (apiKey === '••••••••••••••••') {
-                showMessage('config-message', 'Please enter a new API key.', 'error');
+            // Check if this is the masked key (user didn't change it)
+            if (apiKeyInput.dataset.hasKey === 'true' && apiKey.includes('••••')) {
+                showMessage('config-message', 'Configuration is already saved and working!', 'success');
                 return;
             }
             
@@ -507,6 +638,17 @@
                 if (data.success) {
                     configuredSuccessfully = true;
                     showMessage('config-message', data.message, 'success');
+                    
+                    // Update the display
+                    const maskedKey = apiKey.substring(0, 8) + '••••••••••••••••';
+                    apiKeyInput.value = maskedKey;
+                    apiKeyInput.dataset.hasKey = 'true';
+                    
+                    // Update header to show connected status
+                    const configCard = document.getElementById('config-card');
+                    const h2 = configCard.querySelector('h2');
+                    h2.innerHTML = '<span class="icon">⚙️</span> Configuration <span style="color: #28a745; font-size: 0.9em;">✓ Connected</span> <span class="toggle" id="config-toggle">▲</span>';
+                    
                     // Auto-collapse config after successful setup
                     setTimeout(() => {
                         document.getElementById('config-content').classList.add('collapsed');
@@ -679,6 +821,7 @@
                             <th>Size</th>
                             <th>Date</th>
                             <th>Reason</th>
+                            <th>Feedback</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -690,10 +833,22 @@
                         <td>
                             <input type="checkbox" class="checkbox" data-id="${item.id}" ${item.marked ? 'checked' : ''}>
                         </td>
-                        <td class="filename">${item.filename}</td>
+                        <td class="filename" onclick="showPreview('${item.id}', '${item.filename}')">${item.filename}</td>
                         <td class="size">${formatFileSize(item.size)}</td>
                         <td>${formatDate(item.date)}</td>
                         <td class="reason">${item.reason}</td>
+                        <td>
+                            <div class="feedback-btns">
+                                <button class="feedback-btn correct ${item.feedback === 'correct' ? 'active' : ''}" 
+                                        onclick="provideFeedback('${item.id}', '${item.filename}', '${currentTab}', 'correct', '${item.reason}')">
+                                    ✓ Correct
+                                </button>
+                                <button class="feedback-btn incorrect ${item.feedback === 'incorrect' ? 'active' : ''}" 
+                                        onclick="provideFeedback('${item.id}', '${item.filename}', '${currentTab}', 'incorrect', '${item.reason}')">
+                                    ✗ Wrong
+                                </button>
+                            </div>
+                        </td>
                     </tr>
                 `;
             });
@@ -754,6 +909,139 @@
         function formatDate(dateString) {
             if (!dateString) return '';
             return new Date(dateString).toLocaleDateString();
+        }
+        
+        // Feedback system
+        let feedbackLog = [];
+        
+        function provideFeedback(assetId, filename, category, feedback, reason) {
+            // Update UI
+            const buttons = event.target.parentElement.querySelectorAll('.feedback-btn');
+            buttons.forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Store feedback
+            const entry = {
+                timestamp: new Date().toISOString(),
+                assetId: assetId,
+                filename: filename,
+                category: category,
+                detected_reason: reason,
+                user_feedback: feedback
+            };
+            
+            // Update local storage
+            feedbackLog.push(entry);
+            saveFeedbackToLocal(assetId, feedback);
+            
+            // Update the item in results
+            const allItems = [...results.screenshots, ...results.web_files, ...results.recovery_artifacts];
+            const item = allItems.find(i => i.id === assetId);
+            if (item) {
+                item.feedback = feedback;
+            }
+            
+            // Send feedback to server
+            sendFeedback(entry);
+        }
+        
+        async function sendFeedback(entry) {
+            try {
+                await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(entry)
+                });
+            } catch (error) {
+                console.error('Error sending feedback:', error);
+            }
+        }
+        
+        function saveFeedbackToLocal(assetId, feedback) {
+            const feedbacks = JSON.parse(localStorage.getItem('immichCleanerFeedback') || '{}');
+            feedbacks[assetId] = feedback;
+            localStorage.setItem('immichCleanerFeedback', JSON.stringify(feedbacks));
+        }
+        
+        function loadFeedbackFromLocal() {
+            return JSON.parse(localStorage.getItem('immichCleanerFeedback') || '{}');
+        }
+        
+        function showLearningLog() {
+            const container = document.getElementById('learning-log-container');
+            const logElement = document.getElementById('learning-log');
+            
+            if (container.style.display === 'none') {
+                container.style.display = 'block';
+                
+                // Generate learning log
+                const log = {
+                    generated_at: new Date().toISOString(),
+                    total_feedback_entries: feedbackLog.length,
+                    feedback_summary: {},
+                    detailed_feedback: feedbackLog
+                };
+                
+                // Calculate summary
+                feedbackLog.forEach(entry => {
+                    const key = `${entry.category}_${entry.user_feedback}`;
+                    log.feedback_summary[key] = (log.feedback_summary[key] || 0) + 1;
+                });
+                
+                logElement.textContent = JSON.stringify(log, null, 2);
+            } else {
+                container.style.display = 'none';
+            }
+        }
+        
+        // Image preview
+        async function showPreview(assetId, filename) {
+            try {
+                const modal = document.getElementById('imageModal');
+                const modalImg = document.getElementById('modalImage');
+                const modalFilename = document.getElementById('modalFilename');
+                const modalInfo = document.getElementById('modalInfo');
+                
+                modal.style.display = 'block';
+                modalFilename.textContent = filename;
+                modalInfo.textContent = 'Loading...';
+                
+                // Get the thumbnail URL from Immich
+                const config = await fetch('/api/config').then(r => r.json());
+                const thumbnailUrl = `${config.immich_url}/api/assets/${assetId}/thumbnail?size=preview`;
+                
+                // Create image with auth header
+                const img = new Image();
+                img.onload = function() {
+                    modalImg.src = this.src;
+                    modalInfo.textContent = `${filename} - Click outside to close`;
+                };
+                img.onerror = function() {
+                    modalInfo.textContent = 'Unable to load preview';
+                };
+                
+                // Fetch with API key
+                fetch(thumbnailUrl, {
+                    headers: {
+                        'X-Api-Key': config.immich_api_key
+                    }
+                })
+                .then(response => response.blob())
+                .then(blob => {
+                    img.src = URL.createObjectURL(blob);
+                })
+                .catch(err => {
+                    modalInfo.textContent = 'Error loading preview: ' + err.message;
+                });
+                
+            } catch (error) {
+                console.error('Error showing preview:', error);
+            }
+        }
+        
+        function closeModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            document.getElementById('imageModal').style.display = 'none';
         }
     </script>
 </body>

@@ -22,6 +22,21 @@
             overflow-y: auto;
         }
         
+        kbd {
+            background-color: #f7f7f7;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            box-shadow: 0 1px 0 rgba(0,0,0,0.2);
+            color: #333;
+            display: inline-block;
+            font-family: monospace;
+            font-size: 0.85em;
+            line-height: 1;
+            padding: 2px 4px;
+            white-space: nowrap;
+            margin-left: 5px;
+        }
+        
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -698,9 +713,9 @@
             <p id="modalInfo"></p>
         </div>
         <div class="modal-actions">
-            <button class="modal-btn correct" onclick="quickFeedback('correct')">✓ Delete (Correct Detection)</button>
-            <button class="modal-btn incorrect" onclick="quickFeedback('incorrect')">✗ Keep (Wrong Detection)</button>
-            <button class="modal-btn secondary" onclick="navigateImage(1)">Skip →</button>
+            <button class="modal-btn correct" onclick="quickFeedback('correct')">✓ Delete (Correct) <kbd>1</kbd></button>
+            <button class="modal-btn incorrect" onclick="quickFeedback('incorrect')">✗ Keep (Wrong) <kbd>2</kbd></button>
+            <button class="modal-btn secondary" onclick="navigateImage(1)">Skip → <kbd>3</kbd></button>
         </div>
     </div>
 
@@ -1145,19 +1160,61 @@
             if (container.style.display === 'none') {
                 container.style.display = 'block';
                 
-                // Generate learning log
+                // Get feedback from localStorage
+                const localFeedback = JSON.parse(localStorage.getItem('immichCleanerFeedback') || '{}');
+                
+                // Generate comprehensive learning log
                 const log = {
                     generated_at: new Date().toISOString(),
                     total_feedback_entries: feedbackLog.length,
-                    feedback_summary: {},
+                    local_feedback_count: Object.keys(localFeedback).length,
+                    feedback_summary: {
+                        screenshots_correct: 0,
+                        screenshots_incorrect: 0,
+                        web_files_correct: 0,
+                        web_files_incorrect: 0,
+                        recovery_artifacts_correct: 0,
+                        recovery_artifacts_incorrect: 0
+                    },
+                    pattern_effectiveness: {},
+                    misidentified_files: [],
                     detailed_feedback: feedbackLog
                 };
                 
-                // Calculate summary
+                // Analyze feedback
                 feedbackLog.forEach(entry => {
                     const key = `${entry.category}_${entry.user_feedback}`;
                     log.feedback_summary[key] = (log.feedback_summary[key] || 0) + 1;
+                    
+                    // Track pattern effectiveness
+                    if (!log.pattern_effectiveness[entry.detected_reason]) {
+                        log.pattern_effectiveness[entry.detected_reason] = {
+                            correct: 0,
+                            incorrect: 0
+                        };
+                    }
+                    log.pattern_effectiveness[entry.detected_reason][entry.user_feedback]++;
+                    
+                    // Collect misidentified files
+                    if (entry.user_feedback === 'incorrect') {
+                        log.misidentified_files.push({
+                            filename: entry.filename,
+                            category: entry.category,
+                            reason: entry.detected_reason
+                        });
+                    }
                 });
+                
+                // Add recommendations
+                log.recommendations = [];
+                if (log.misidentified_files.length > 0) {
+                    log.recommendations.push("Review misidentified files to improve pattern matching");
+                }
+                
+                // Calculate accuracy
+                const totalFeedback = feedbackLog.length;
+                const correctFeedback = feedbackLog.filter(f => f.user_feedback === 'correct').length;
+                log.accuracy_percentage = totalFeedback > 0 ? Math.round((correctFeedback / totalFeedback) * 100) : 0;
                 
                 logElement.textContent = JSON.stringify(log, null, 2);
             } else {

@@ -583,10 +583,22 @@
                 
                 <div class="auto-scan-info" id="auto-scan-info">
                     <div class="spinner"></div>
-                    <span>Auto-scanning is active. Results update every 5 minutes.</span>
+                    <span>Auto-scanning is active. Results update every <span id="scan-interval-text">5</span> minutes.</span>
                 </div>
                 
-                <div id="analysis-status">Ready to start analysis</div>
+                <div style="margin-top: 15px;">
+                    <label style="font-weight: 600; color: #555;">Auto-scan interval (minutes):</label>
+                    <select id="scan-interval" onchange="updateScanInterval()" style="margin-left: 10px; padding: 5px 10px; border: 1px solid #e1e5e9; border-radius: 4px;">
+                        <option value="1">1 minute</option>
+                        <option value="5" selected>5 minutes</option>
+                        <option value="10">10 minutes</option>
+                        <option value="15">15 minutes</option>
+                        <option value="30">30 minutes</option>
+                        <option value="60">1 hour</option>
+                    </select>
+                </div>
+                
+                <div id="analysis-status" style="margin-top: 15px;">Ready to start analysis</div>
                 
                 <div class="progress-bar" style="display: none;" id="progress-container">
                     <div class="progress-fill" id="progress-bar"></div>
@@ -1265,10 +1277,15 @@
             // Run initial scan
             checkAndRunAnalysis();
             
-            // Set up periodic scanning (every 5 minutes)
+            // Clear any existing interval
+            if (autoScanInterval) {
+                clearInterval(autoScanInterval);
+            }
+            
+            // Set up periodic scanning based on selected interval
             autoScanInterval = setInterval(() => {
                 checkAndRunAnalysis();
-            }, 5 * 60 * 1000); // 5 minutes
+            }, autoScanMinutes * 60 * 1000);
             
             document.getElementById('auto-scan-info').style.display = 'flex';
         }
@@ -1279,6 +1296,24 @@
                 autoScanInterval = null;
             }
             document.getElementById('auto-scan-info').style.display = 'none';
+        }
+        
+        function updateScanInterval() {
+            const newInterval = parseInt(document.getElementById('scan-interval').value);
+            autoScanMinutes = newInterval;
+            
+            // Save to localStorage
+            localStorage.setItem('autoScanInterval', newInterval);
+            
+            // Update display
+            document.getElementById('scan-interval-text').textContent = newInterval;
+            
+            // Restart auto-scan with new interval
+            if (autoScanEnabled) {
+                stopAutoScan();
+                startAutoScan();
+                showMessage('analysis-message', `Auto-scan interval updated to ${newInterval} minute${newInterval > 1 ? 's' : ''}`, 'success');
+            }
         }
         
         function toggleAutoScan() {

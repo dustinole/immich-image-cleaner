@@ -292,6 +292,63 @@ def proxy_thumbnail(asset_id):
         logger.error(f"Error proxying thumbnail: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/delete', methods=['POST'])
+def delete_assets():
+    """Delete assets directly via Immich API"""
+    if not cleaner_engine:
+        return jsonify({
+            'success': False,
+            'message': 'Cleaner engine not initialized'
+        }), 400
+    
+    data = request.json
+    asset_ids = data.get('asset_ids', [])
+    
+    if not asset_ids:
+        return jsonify({
+            'success': False,
+            'message': 'No assets to delete'
+        }), 400
+    
+    try:
+        # Delete via Immich API
+        headers = {
+            'X-Api-Key': cleaner_engine.api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        # Immich bulk delete endpoint
+        delete_response = requests.delete(
+            f"{cleaner_engine.base_url}/api/asset",
+            headers=headers,
+            json={
+                "ids": asset_ids,
+                "force": True
+            }
+        )
+        
+        if delete_response.status_code == 200:
+            # Remove from our database
+            cleaner_engine.remove_deleted_assets(asset_ids)
+            
+            return jsonify({
+                'success': True,
+                'message': f'Successfully deleted {len(asset_ids)} assets',
+                'deleted_count': len(asset_ids)
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': f'Immich API error: {delete_response.status_code}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error deleting assets: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
 @app.route('/api/feedback', methods=['POST'])
 def save_feedback():
     """Save user feedback for learning"""

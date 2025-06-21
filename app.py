@@ -311,23 +311,44 @@ def delete_assets():
         }), 400
     
     try:
-        # Delete via Immich API
+        # Delete via Immich API - try different endpoints
         headers = {
             'X-Api-Key': cleaner_engine.api_key,
             'Content-Type': 'application/json'
         }
         
-        # Immich bulk delete endpoint
-        delete_response = requests.delete(
-            f"{cleaner_engine.base_url}/api/asset",
-            headers=headers,
-            json={
-                "ids": asset_ids,
-                "force": True
-            }
-        )
+        # Try the newer bulk delete endpoint first
+        delete_data = {
+            "ids": asset_ids,
+            "force": True
+        }
         
-        if delete_response.status_code == 200:
+        # Try different Immich API endpoints
+        endpoints = [
+            f"{cleaner_engine.base_url}/api/assets",
+            f"{cleaner_engine.base_url}/api/asset"
+        ]
+        
+        delete_success = False
+        for endpoint in endpoints:
+            try:
+                delete_response = requests.delete(
+                    endpoint,
+                    headers=headers,
+                    json=delete_data,
+                    timeout=30
+                )
+                
+                if delete_response.status_code in [200, 204]:
+                    delete_success = True
+                    break
+                else:
+                    logger.warning(f"Delete endpoint {endpoint} returned {delete_response.status_code}")
+            except Exception as e:
+                logger.warning(f"Delete endpoint {endpoint} failed: {e}")
+                continue
+        
+        if delete_success:
             # Remove from our database
             cleaner_engine.remove_deleted_assets(asset_ids)
             
@@ -339,7 +360,7 @@ def delete_assets():
         else:
             return jsonify({
                 'success': False,
-                'message': f'Immich API error: {delete_response.status_code}'
+                'message': 'Failed to delete assets - check Immich API'
             }), 500
             
     except Exception as e:

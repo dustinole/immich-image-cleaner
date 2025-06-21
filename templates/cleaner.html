@@ -9,6 +9,17 @@
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+        .learning-log {
+            background: #f8f9fa;
+            border: 1px solid #e1e5e9;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            font-family: monospace;
+            font-size: 0.85em;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
         }
         
         body {
@@ -455,17 +466,59 @@
             100% { transform: rotate(360deg); }
         }
         
-        .learning-log {
-            background: #f8f9fa;
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 20px 0;
+        }
+        
+        .pagination button {
+            padding: 8px 12px;
             border: 1px solid #e1e5e9;
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 20px;
-            font-family: monospace;
-            font-size: 0.85em;
-            white-space: pre-wrap;
-            max-height: 200px;
-            overflow-y: auto;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        
+        .pagination button:hover:not(:disabled) {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .pagination button.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .pagination .page-info {
+            padding: 8px 16px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        
+        .items-per-page {
+            margin-bottom: 10px;
+            text-align: right;
+        }
+        
+        .items-per-page select {
+            padding: 5px 10px;
+            border: 1px solid #e1e5e9;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
         }
         
         @media (max-width: 768px) {
@@ -601,11 +654,18 @@
                     <p>Loading results...</p>
                 </div>
                 
+                <div class="pagination" id="pagination-container" style="display: none;">
+                    <button onclick="changePage(-1)" id="prev-btn">← Previous</button>
+                    <span class="page-info" id="page-info">Page 1 of 1</span>
+                    <button onclick="changePage(1)" id="next-btn">Next →</button>
+                </div>
+                
                 <div style="margin-top: 20px;">
                     <button class="btn" onclick="markSelected()">Mark Selected for Deletion</button>
+                    <button class="btn danger" onclick="deleteSelected()">🗑️ Delete Selected Now</button>
                     <button class="btn secondary" onclick="exportCSV()">Export to CSV</button>
-                    <button class="btn danger" onclick="generateDeletionScript()">Generate Deletion Script</button>
                     <button class="btn secondary" onclick="showLearningLog()">Show Learning Log</button>
+                    <button class="btn secondary" onclick="showMissedPatterns()">Find Missed Screenshots</button>
                 </div>
                 
                 <div id="learning-log-container" style="display: none;">
